@@ -92,6 +92,12 @@ export function setupSelfModifyHandlers(): void {
   })
 
   ipcMain.handle('self-modify:rollback', async (_event, snapshotHash: string) => {
+    // 防御纵深：转发前重新读 config 的写开关，为 false 直接拒绝（不依赖服务层状态）
+    const enabled = await readWriteEnabled()
+    if (!enabled) {
+      return { success: false, effect: 'none' as const, error: '写模式未开启' }
+    }
+    selfModifyService.setWriteEnabled(true)
     const result = await selfModifyService.rollback(String(snapshotHash || ''), broadcastProgress)
     if (result.success) triggerEffect(result.effect)
     return result

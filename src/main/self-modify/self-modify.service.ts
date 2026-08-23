@@ -19,6 +19,7 @@ import { execFile, execFileSync } from 'child_process'
 import { createLogger } from '../utils/logging'
 import {
   isAllowed,
+  isReadable,
   classifyLevel,
   normalizeRel,
   maxLevel,
@@ -159,7 +160,7 @@ export class SelfModifyService {
         if (childRel.split('/').some((s) => (BLACKLIST_SEGMENTS as readonly string[]).includes(s))) continue
         this.walkRecursive(childRel, childAbs, out, depth + 1)
       } else if (d.isFile()) {
-        if (!isAllowed(childRel)) continue
+        if (!isReadable(childRel)) continue
         let size = 0
         try {
           size = fs.statSync(childAbs).size
@@ -176,8 +177,9 @@ export class SelfModifyService {
     if (!p || !this.repoRoot) {
       return { path: rel, content: '', truncated: false, totalLines: 0, level: 'L0' }
     }
-    if (!isAllowed(p)) {
-      return { path: p, content: '', truncated: false, totalLines: 0, level: 'L3' }
+    // L3 架构文件允许只读（isReadable 命中白名单但未触硬黑名单），仅禁止写入
+    if (!isReadable(p)) {
+      return { path: p, content: '', truncated: false, totalLines: 0, level: classifyLevel(p) }
     }
     const abs = path.join(this.repoRoot, p)
     if (!fs.existsSync(abs)) {
@@ -264,7 +266,7 @@ export class SelfModifyService {
       return { success: false, filesWritten: [], effect: 'none', error: 'git 快照不可用，为安全起见拒绝写入' }
     }
 
-    const validated = this.validateChangeSet(changeSet)
+    const validated = this.validateChangeSet(changeSet, true)
     if (!validated.ok) {
       return { success: false, filesWritten: [], effect: 'none', error: validated.error }
     }
@@ -357,20 +359,26 @@ export class SelfModifyService {
    * rollback：回退到指定快照
    * ============================================================ */
   async rollback(snapshotHash: string, onProgress?: (p: SelfModifyProgress) => void): Promise<RollbackResult> {
+    if (!this.writeEnabled) {
+      return { success: false, effect: 'none', error: '写模式未开启，请在自我改造页开启后再试' }
+    }
     if (!this.repoRoot || !this.gitAvailable) {
       return { success: false, effect: 'none', error: 'git 快照不可用' }
     }
     const snap = this.findSnapshot(snapshotHash)
+    if (!snap) {
+      return { success: false, effect: 'none', error: '快照不存在，拒绝回退' }
+    }
     try {
       onProgress?.({ phase: 'rollback', message: `回退到快照 ${snapshotHash.slice(0, 8)}` })
-      if (snap && snap.files.length > 0) {
+      if (snap.files.length > 0) {
         await this.git(['checkout', snapshotHash, '--', ...snap.files])
       } else {
         await this.git(['checkout', snapshotHash, '--', '.'])
       }
-      const effect = computeEffect(snap?.files || [])
-      this.audit('rollback', `回退到快照 ${snapshotHash}`, snapshotHash, snap?.files || [])
-      return { success: true, restoredFiles: snap?.files || [], effect }
+      const effect = computeEffect(snap.files)
+      this.audit('rollback', `回退到快照 ${snapshotHash}`, snapshotHash, snap.files)
+      return { success: true, restoredFiles: snap.files, effect }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       return { success: false, effect: 'none', error: msg }
@@ -410,9 +418,12 @@ export class SelfModifyService {
   /* ============================================================
    * 校验 + 持久化辅助
    * ============================================================ */
-  private validateChangeSet(changeSet: ChangeSet): { ok: boolean; error?: string } {
+  private validateChangeSet(changeSet: ChangeSet, requireConfirmed = false): { ok: boolean; error?: string } {
     if (!changeSet || !Array.isArray(changeSet.files) || changeSet.files.length === 0) {
       return { ok: false, error: '变更集为空' }
+    }
+    if (requireConfirmed && changeSet.confirmed !== true) {
+      return { ok: false, error: '改动未经人工确认（confirmed 未置 true）' }
     }
     if (changeSet.files.length > LIMITS.MAX_FILES_PER_CHANGE) {
       return { ok: false, error: `单次改动文件数超过上限（≤${LIMITS.MAX_FILES_PER_CHANGE}）` }

@@ -4,6 +4,10 @@
  * 【安全底线】本模块是"路径信任"的唯一真源，所有渲染进程传入的路径一律视为不可信，
  * 必须在写入前经过 normalizeRel + isAllowed + classifyLevel 三重校验。
  *
+ * 【大小写不敏感】目标平台 Windows/NTFS 文件系统大小写不敏感，攻击者可用大小写变体
+ * （如 `src/main/INDEX.ts`）绕过黑名单命中白名单。因此所有黑/白名单与路径的比较一律
+ * 先 `toLowerCase()` 再比较（见 *_LOWER 常量），彻底封死大小写绕过。
+ *
  * @module main/self-modify/whitelist
  */
 
@@ -64,6 +68,17 @@ export const LIMITS = {
   MAX_LINES_PER_CHANGE: 300,
 } as const
 
+/* ============================================================
+ * 小写化常量（用于大小写不敏感比较）
+ * ============================================================ */
+const L3_LOWER = L3_ARCHITECTURE_PATHS.map((s) => s.toLowerCase())
+const WHITELIST_LOWER = WHITELIST_DIRS.map((s) => s.toLowerCase())
+const BLACKLIST_SEGMENTS_LOWER = BLACKLIST_SEGMENTS.map((s) => s.toLowerCase())
+const BLACKLIST_FILENAMES_LOWER = BLACKLIST_FILENAMES.map((s) => s.toLowerCase())
+
+/** 敏感/危险文件扩展名与 `.env` 前缀 */
+const SENSITIVE_PATTERN = /\.(log|pem|key|crt|p12|pfx)$/
+
 /**
  * 规范化相对路径为仓库内相对路径（正斜杠，无 `./` 前缀，无尾部斜杠）。
  * 拒绝绝对路径、盘符路径、`..` 逃逸与空路径。
@@ -99,58 +114,76 @@ export function normalizeRel(input: string): string | null {
   return segments.join('/')
 }
 
-/** 判断规范化后的相对路径是否命中白名单目录（且未被黑名单拦截） */
-export function isAllowed(rel: string): boolean {
+/**
+ * 判断路径是否"可读"：命中白名单目录且未触硬黑名单（node_modules/.git/.env 等）。
+ * 注意：L3 架构文件在此仍为"可读"（只读开放），仅禁止写入。
+ */
+export function isReadable(rel: string): boolean {
   const p = normalizeRel(rel)
   if (!p) return false
+  const lp = p.toLowerCase()
 
   // 黑名单目录段
-  const lower = p.toLowerCase()
-  for (const seg of BLACKLIST_SEGMENTS) {
-    if (lower.split('/').includes(seg)) return false
+  for (const seg of BLACKLIST_SEGMENTS_LOWER) {
+    if (lp.split('/').includes(seg)) return false
   }
   // 敏感文件（.env / 私钥 / 证书 / 日志）
   const base = p.split('/').pop()?.toLowerCase() || ''
-  if (/^\.env/.test(base) || /\.(log|pem|key|crt|p12|pfx)$/.test(base)) return false
+  if (base.startsWith('.env') || SENSITIVE_PATTERN.test(base)) return false
 
   // 黑名单文件名
-  if ((BLACKLIST_FILENAMES as readonly string[]).includes(base)) return false
-
-  // 架构性黑名单
-  for (const arch of L3_ARCHITECTURE_PATHS) {
-    if (p === arch || p.startsWith(arch)) return false
-  }
+  if (BLACKLIST_FILENAMES_LOWER.includes(base)) return false
 
   // 白名单目录
-  return (WHITELIST_DIRS as readonly string[]).some((dir) => p.startsWith(dir))
+  return WHITELIST_LOWER.some((dir) => lp.startsWith(dir))
 }
 
 /**
- * 判定改动级别：
- * - L3：架构性文件（黑名单命中即 L3，禁止写入）
+ * 判断路径是否允许"写入"：可读且不命中 L3 架构黑名单。
+ * 所有比较大小写不敏感，封死 Windows/NTFS 大小写绕过。
+ */
+export function isAllowed(rel: string): boolean {
+  if (!isReadable(rel)) return false
+  const lp = normalizeRel(rel)!.toLowerCase()
+
+  for (const arch of L3_LOWER) {
+    if (lp === arch || lp.startsWith(arch)) return false
+  }
+  return true
+}
+
+/**
+ * 判定改动级别（大小写不敏感）：
+ * - L3：架构性文件 / 硬黑名单 / 敏感文件（禁止写入）
  * - L1：人设 / 文档 / 共享常量 / 主题样式 token
  * - L2：业务逻辑（src/main 业务 handler、src/renderer 组件行为）
- * - L0：只读（isAllowed 未命中时由调用方兜底为只读）
+ * - L0：只读（未命中任何级别的兜底）
  */
 export function classifyLevel(rel: string): ModifyLevel {
   const p = normalizeRel(rel)
   if (!p) return 'L3'
+  const lp = p.toLowerCase()
 
-  for (const arch of L3_ARCHITECTURE_PATHS) {
-    if (p === arch || p.startsWith(arch)) return 'L3'
+  // 硬黑名单目录段
+  for (const seg of BLACKLIST_SEGMENTS_LOWER) {
+    if (lp.split('/').includes(seg)) return 'L3'
+  }
+  const base = p.split('/').pop()?.toLowerCase() || ''
+  if (BLACKLIST_FILENAMES_LOWER.includes(base)) return 'L3'
+  if (base.startsWith('.env') || SENSITIVE_PATTERN.test(base)) return 'L3'
+
+  // 架构性文件
+  for (const arch of L3_LOWER) {
+    if (lp === arch || lp.startsWith(arch)) return 'L3'
   }
 
-  const base = p.split('/').pop()?.toLowerCase() || ''
-  if ((BLACKLIST_FILENAMES as readonly string[]).includes(base)) return 'L3'
-  if (/^\.env/.test(base) || /\.(log|pem|key|crt|p12|pfx)$/.test(base)) return 'L3'
-
-  if (p.startsWith('personas/') || p.startsWith('docs/')) return 'L1'
-  if (p.startsWith('src/shared/')) return 'L1'
+  if (lp.startsWith('personas/') || lp.startsWith('docs/')) return 'L1'
+  if (lp.startsWith('src/shared/')) return 'L1'
   // 主题 token / 样式 / 文案类文件归为 L1
-  if (p.endsWith('.css') || p.endsWith('theme.ts') || p.includes('i18n')) return 'L1'
+  if (lp.endsWith('.css') || lp.endsWith('theme.ts') || lp.includes('i18n')) return 'L1'
 
-  if (p.startsWith('src/main/')) return 'L2'
-  if (p.startsWith('src/renderer/')) return 'L2'
+  if (lp.startsWith('src/main/')) return 'L2'
+  if (lp.startsWith('src/renderer/')) return 'L2'
 
   return 'L1'
 }
@@ -163,8 +196,12 @@ export function maxLevel(a: ModifyLevel, b: ModifyLevel): ModifyLevel {
   return LEVEL_ORDER.indexOf(a) >= LEVEL_ORDER.indexOf(b) ? a : b
 }
 
-/** 将相对路径解析为仓库根下的绝对路径（仅供 main 进程内部使用，调用前必须已通过 isAllowed） */
-export function resolveRepoPath(repoRoot: string, rel: string): string {
-  const p = normalizeRel(rel) || rel
+/**
+ * 将相对路径解析为仓库根下的绝对路径（仅供 main 进程内部使用，调用前必须已通过 isAllowed）。
+ * normalizeRel 失败时返回 null（绝不回退到未校验的原始路径）。
+ */
+export function resolveRepoPath(repoRoot: string, rel: string): string | null {
+  const p = normalizeRel(rel)
+  if (!p) return null
   return path.join(repoRoot, p)
 }

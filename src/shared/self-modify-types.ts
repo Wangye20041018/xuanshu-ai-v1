@@ -25,6 +25,11 @@ export interface ChangeSet {
   files: SelfModifyFileChange[]
   /** 改动摘要（写入审计日志） */
   summary: string
+  /**
+   * 服务端确认门：渲染层必须在 diff 人工确认后置为 true，
+   * 服务层 apply 强制校验 `confirmed === true` 才允许写入（不依赖 UI modal）。
+   */
+  confirmed?: boolean
 }
 
 /** 单文件 diff 行（DiffViewer 直接消费） */

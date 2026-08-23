@@ -90,7 +90,8 @@ export default function SelfModify() {
     const cs = buildChangeSet()
     if (!cs) return
     setConfirmOpen(false)
-    const result = await store.applyChangeSet(cs)
+    // 服务端确认门：diff 人工确认后置 confirmed=true，服务层强制校验
+    const result = await store.applyChangeSet({ ...cs, confirmed: true })
     if (result?.success) {
       showToast('success', '改动已应用，正在按生效方式刷新/重启…')
       setDirty(false)
