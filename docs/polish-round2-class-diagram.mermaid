@@ -1,0 +1,66 @@
+classDiagram
+    class BackupService {
+        -userDataDir: string
+        +exportData(chatStoreJson: string): Promise~BackupResult~
+        +importData(): Promise~ImportResult~
+        +getInfo(): Promise~BackupInfo~
+        -collectDataFiles(): string[]
+        -buildManifest(files: string[]): Manifest
+        -validateManifest(dir: string): Manifest
+    }
+    class Manifest {
+        +version: number
+        +exportedAt: number
+        +files: string[]
+        +checksums: Record~string,string~
+    }
+    class BackupResult {
+        +success: boolean
+        +path: string
+        +sizeBytes: number
+        +error: string
+    }
+
+    class ToolRegistry {
+        -tools: Map~string,ToolDefinition~
+        +register(tool: ToolDefinition): void
+        +registerAll(tools: ToolDefinition[]): void
+        +get(name: string): ToolDefinition
+        +getFunctionCallingTools(): FunctionTool[]
+        +execute(name: string, params: object): Promise~ToolResult~
+    }
+    class ToolDefinition {
+        +name: string
+        +description: string
+        +category: string
+        +parameters: object
+        +dangerous: boolean
+        +confirm(params: object): Promise~boolean~
+        +execute(params: object): Promise~ToolResult~
+    }
+    class ReActAgent {
+        +id: string
+        +run(input: AgentInput): AsyncIterable~AgentEvent~
+        -parseToolCall(text: string): ToolCall
+        -confirmIfDangerous(tool: ToolDefinition, params: object): Promise~boolean~
+    }
+
+    class MemoryDb {
+        +checkpoint(): void
+        +close(): void
+    }
+    class VectorStore {
+        +initialize(): void
+        +reload(): void
+    }
+    class KnowledgeGraph {
+        +initialize(): void
+        +reload(): void
+    }
+
+    BackupService --> Manifest
+    BackupService --> MemoryDb : checkpoint 后打包
+    BackupService --> VectorStore : 覆盖后 reload
+    BackupService --> KnowledgeGraph : 覆盖后 reload
+    ReActAgent --> ToolRegistry : execute / confirm
+    ToolRegistry --> ToolDefinition

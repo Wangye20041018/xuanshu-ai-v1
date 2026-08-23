@@ -1,0 +1,5 @@
+out/
+node_modules/
+__app_pkg__/
+resources/
+*.md

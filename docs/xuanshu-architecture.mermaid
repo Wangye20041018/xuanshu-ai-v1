@@ -1,0 +1,19 @@
+graph TD
+    IDX[index.ts 启动] --> IPC[30+ IPC handlers]
+    IDX --> MM[model-manager]
+    MM --> CPU[cpu-engine node-llama-cpp]
+    MM --> SG[sglang.ipc]
+    SG --> PY[runtime/python 嵌入Python]
+    PY --> RES_SG[resources/sglang wheels]
+    PY --> RES_VO[resources/voice-models 空]
+    PY --> RES_PY[resources/python 预装torch]
+    IPC --> LLM[llm/provider-registry]
+    LLM --> PROV[5类 Provider]
+    INF[debate/visual-reasoning] --> MM
+    INF --> CPU
+    INF --> SG
+    VA[visual-agent] --> VIS[vision qwen2-vl]
+    VIS --> SG
+    VE[voice-engine] --> PY
+    VE --> TTS[tts edge/piper]
+    IDX --> CFG[config.ipc electron-store]

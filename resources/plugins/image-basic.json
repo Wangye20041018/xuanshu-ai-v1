@@ -1,0 +1,23 @@
+{
+  "id": "image-basic",
+  "name": "图像基础",
+  "description": "裁剪/缩放/格式转换/压缩",
+  "level": "simple",
+  "triggers": ["图片", "裁剪", "缩放", "格式转换", "压缩图片", "图像处理", "改尺寸"],
+  "function_schema": {
+    "name": "image_basic",
+    "description": "基础图像处理",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["resize", "crop", "convert", "compress", "info"]},
+        "input_path": {"type": "string"},
+        "output_path": {"type": "string"},
+        "width": {"type": "integer"},
+        "height": {"type": "integer"},
+        "quality": {"type": "integer", "default": 85}
+      },
+      "required": ["action", "input_path"]
+    }
+  }
+}

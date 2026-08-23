@@ -1,0 +1,96 @@
+appId: com.xuanshu.app
+productName: 玄枢AI
+copyright: © 2026 玄枢AI
+directories:
+  output: ./__app_pkg__
+files:
+  - out
+  - package.json
+  - node_modules/@electron-toolkit/utils/**/*
+  - node_modules/better-sqlite3/**/*
+  - node_modules/node-llama-cpp/**/*
+  - node_modules/ws/**/*
+  - node_modules/bufferutil/**/*
+  - node_modules/ajv/**/*
+  - node_modules/ajv-formats/**/*
+  - node_modules/tiktoken/**/*
+  - node_modules/electron-updater/**/*
+  - "!node_modules/**/*.map"
+  - "!node_modules/**/*.ts"
+  - "!node_modules/**/src/**"
+  - "!node_modules/**/docs/**"
+asar: true
+asarUnpack:
+  - node_modules/better-sqlite3/**
+  - node_modules/node-llama-cpp/**
+  - node_modules/bufferutil/**
+  - node_modules/ws/**
+  - "**/*.node"
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  icon: resources/icons/icon.ico
+  requestedExecutionLevel: requireAdministrator
+portable:
+  artifactName: XuanShuAI_${version}_Portable.${ext}
+publish: null
+extraMetadata:
+  main: out/main/index.js
+extraResources:
+  # === 轻量资源 (< 250MB 总) ===
+  - from: resources/icons
+    to: icons
+  - from: resources/vc_dll
+    to: vc_dll
+  - from: resources/vc_redist
+    to: vc_redist
+  - from: resources/sglang
+    to: sglang
+  - from: resources/voice-models
+    to: voice-models
+  - from: resources/models
+    to: models
+    filter:
+      - "!qwen3.5-9b.gguf"
+      - "!internvl2.5-14b.gguf"
+  - from: src/main/visual-agent/common-knowledge
+    to: knowledge
+  - from: resources/engine
+    to: engine
+    # 打包卫生：与 electron-builder.yml 保持一致，排除日志/字节码/历史备份
+    filter:
+      - "!__pycache__/**"
+      - "!logs/**"
+      - "!*_20*.py"
+      - "!DEPRECATED.md"
+  - from: resources/plugins
+    to: plugins
+  - from: resources/personas
+    to: personas
+  - from: resources/apps
+    to: apps
+  - from: resources/orbs
+    to: orbs
+  - from: resources/
+    to: .
+    filter:
+      # 轻量 DLL（不含 CUDA 和 FFmpeg 重型库）
+      - llama-server.exe
+      - llama-server-impl.dll
+      - llama-common.dll
+      - llama.dll
+      - ggml.dll
+      - ggml-cpu.dll
+      - ggml-blas.dll
+      - mtmd.dll
+      - libomp*.dll
+      - swresample-*.dll
+      - swscale-*.dll
+      - postproc-*.dll
+      - floating-ball.html
+  - from: resources/fonts
+    to: fonts
+  - from: resources/piper
+    to: piper

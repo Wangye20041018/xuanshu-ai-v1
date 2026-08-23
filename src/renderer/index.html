@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: local-file:; font-src 'self' data:; connect-src 'self' ws: http: https:; media-src 'self' blob: data: local-file:; object-src 'none'; worker-src 'self' blob:; frame-src 'self'" />
+    <title>玄枢</title>
+    <link rel="stylesheet" href="../../resources/fonts/fonts.css" />
+    <style>
+      /* 骨架屏 — 在 React 挂载前立即显示，对齐深色主题 */
+      #app-skeleton {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: #1a1a1c;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 99999;
+        font-family: 'Work Sans', 'Noto Sans SC', system-ui, sans-serif;
+        cursor: default;
+        user-select: none;
+      }
+      #app-skeleton .title {
+        font-family: 'Playfair Display', 'Noto Serif SC', serif;
+        font-size: 28px;
+        font-weight: 700;
+        color: #b0b0ba;
+        letter-spacing: 4px;
+        margin-bottom: 16px;
+      }
+      #app-skeleton .subtitle {
+        font-size: 13px;
+        color: rgba(255,255,255,0.3);
+        letter-spacing: 1px;
+      }
+      #app-skeleton .progress-bar {
+        width: 280px; height: 2px;
+        background: rgba(255,255,255,0.06);
+        border-radius: 1px;
+        margin-top: 28px;
+        overflow: hidden;
+      }
+      #app-skeleton .progress-bar .fill {
+        height: 100%;
+        background: linear-gradient(90deg, transparent, #b0b0ba, transparent);
+        border-radius: 1px;
+        animation: xuanshu-progress 2s ease-in-out infinite;
+        width: 40%;
+      }
+      @keyframes xuanshu-progress {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app-skeleton">
+      <div class="title">玄枢 AI</div>
+      <div class="subtitle">正在启动...</div>
+      <div class="progress-bar"><div class="fill"></div></div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

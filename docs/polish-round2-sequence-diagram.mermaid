@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant R as Renderer(Settings)
+    participant P as Preload(api.invoke)
+    participant B as BackupService(main)
+    participant FS as userData 文件
+
+    Note over R,FS: ===== 导出 =====
+    R->>R: flushChatStore()
+    R->>R: localStorage.getItem('xuanshu-chat-store')
+    R->>P: backup:export({chatStore})
+    P->>B: exportData(chatStoreJson)
+    B->>FS: PRAGMA wal_checkpoint(TRUNCATE)
+    B->>FS: 收集 config.json / data/memories.db / vector-store.json / knowledge-graph/*.json
+    B->>B: 写入 localStorage.json + manifest.json
+    B->>B: dialog.showSaveDialog
+    B->>B: adm-zip 打包写盘
+    B-->>R: {success, path, sizeBytes}
+
+    Note over R,FS: ===== 导入 =====
+    R->>P: backup:import()
+    P->>B: importData()
+    B->>B: dialog.showOpenDialog
+    B->>B: 解压临时目录 + validateManifest
+    B->>B: 先备份现状 → backup-pre-import-*.zip
+    B->>FS: 关闭db→覆盖 memories.db/vector-store.json/knowledge-graph/*/config.json
+    B->>R: webContents.send('backup:restore-localstorage', json)
+    R->>R: localStorage.setItem + rehydrate
+    B-->>R: {success, restoredFiles[]}
+
+    Note over R,FS: ===== ReAct 危险工具确认 =====
+    participant A as ReActAgent
+    participant T as ToolRegistry
+    participant D as Dialog(confirm)
+    A->>T: getFunctionCallingTools()
+    A->>A: LLM 输出 → parseToolCall
+    A->>T: tool = get(name)
+    alt tool.dangerous
+        A->>D: tool.confirm(params)
+        D-->>A: 同意/拒绝
+    end
+    A->>T: execute(name, params)
+    T-->>A: ToolResult → 追加上下文

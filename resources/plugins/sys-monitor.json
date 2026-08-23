@@ -1,0 +1,18 @@
+{
+  "id": "sys-monitor",
+  "name": "系统监控",
+  "description": "CPU/GPU/内存/磁盘/网络实时数据",
+  "level": "simple",
+  "triggers": ["系统状态", "CPU", "内存", "磁盘", "网络", "GPU", "温度", "监控", "资源"],
+  "function_schema": {
+    "name": "sys_monitor",
+    "description": "获取系统实时监控数据",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "target": {"type": "string", "enum": ["cpu", "memory", "disk", "network", "gpu", "all"]}
+      },
+      "required": ["target"]
+    }
+  }
+}

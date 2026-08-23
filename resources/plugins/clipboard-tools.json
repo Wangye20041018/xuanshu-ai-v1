@@ -1,0 +1,19 @@
+{
+  "id": "clipboard-tools",
+  "name": "剪贴板",
+  "description": "读取/写入/历史记录/文本处理",
+  "level": "simple",
+  "triggers": ["剪贴板", "粘贴", "复制到剪贴板", "剪贴板历史"],
+  "function_schema": {
+    "name": "clipboard_tools",
+    "description": "操作剪贴板",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["read", "write", "clear", "history"]},
+        "text": {"type": "string", "description": "要写入的文本"}
+      },
+      "required": ["action"]
+    }
+  }
+}

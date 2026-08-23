@@ -1,0 +1,20 @@
+{
+  "id": "reverse",
+  "name": "逆向分析",
+  "description": "PE/ELF解析/反汇编辅助/字符串提取",
+  "level": "heavy",
+  "triggers": ["逆向", "反汇编", "PE", "ELF", "二进制", "字符串提取", "反编译", "脱壳"],
+  "function_schema": {
+    "name": "reverse",
+    "description": "逆向分析工具",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["pe_info", "strings", "hex_dump", "elf_info"]},
+        "file_path": {"type": "string", "description": "二进制文件路径"},
+        "min_length": {"type": "integer", "default": 4, "description": "strings 最小长度"}
+      },
+      "required": ["action", "file_path"]
+    }
+  }
+}

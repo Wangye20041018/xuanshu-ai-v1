@@ -1,0 +1,41 @@
+# ============================================================================
+# 玄枢 AI Engine — Python 依赖
+# 安装: pip install -r requirements.txt
+# ============================================================================
+
+# --- Web 框架 ---
+flask>=3.0,<4.0
+flask-cors>=4.0,<5.0
+
+# --- LLM 推理 ---
+llama-cpp-python>=0.3.0
+
+# --- 语音合成 (TTS) ---
+pyttsx3>=2.90
+comtypes>=1.4          # Windows COM 接口（pyttsx3 的 WinRT 后端）
+
+# --- 系统监控 ---
+psutil>=5.9,<7.0
+GPUtil>=1.4
+
+# --- 网络请求 ---
+requests>=2.31,<3.0
+
+# --- 浏览器自动化 ---
+selenium>=4.15,<5.0
+playwright>=1.40
+
+# --- 桌面自动化 ---
+pyautogui>=0.9.54
+
+# --- Windows API ---
+pywin32>=306            # win32com, pythoncom 等 Windows COM 绑定
+
+# --- 模型下载 ---
+huggingface_hub>=0.20
+
+# --- 日志 ---
+loguru>=0.7
+
+# --- 工具 ---
+send2trash>=1.8         # 安全删除（移入回收站）

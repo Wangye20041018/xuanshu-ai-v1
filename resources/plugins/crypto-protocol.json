@@ -1,0 +1,21 @@
+{
+  "id": "crypto-protocol",
+  "name": "密码与协议",
+  "description": "加解密/签名验证/协议分析",
+  "level": "heavy",
+  "triggers": ["加密", "解密", "签名", "哈希", "AES", "RSA", "协议", "TLS", "证书"],
+  "function_schema": {
+    "name": "crypto_protocol",
+    "description": "密码学与协议分析工具",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["hash", "aes_encrypt", "aes_decrypt", "rsa_gen", "cert_info", "base64_decode"]},
+        "data": {"type": "string", "description": "数据"},
+        "key": {"type": "string", "description": "密钥"},
+        "cert_path": {"type": "string"}
+      },
+      "required": ["action"]
+    }
+  }
+}

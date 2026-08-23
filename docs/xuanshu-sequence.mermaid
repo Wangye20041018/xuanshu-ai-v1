@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant App as app.whenReady
+    participant IPC as setupXxxHandlers
+    participant MM as modelManager
+    participant PY as pythonRuntime
+    participant SG as sglang.ipc
+    participant CPU as cpuInferenceEngine
+    App->>IPC: 注册 30+ IPC handlers (index.ts:182-235)
+    App->>MM: initialize() (index.ts:242)
+    MM->>MM: scanResourceModels() 注册 resources/models/*.gguf (index.ts:256-284)
+    App->>PY: initialize() + startHeartbeat (index.ts:291-295)
+    App->>PY: installSGLangOffline() (index.ts:305)
+    App->>MM: 延迟3s 自动加载默认模型 (index.ts:321)
+    MM->>SG: setSGLangMemFraction('0.88') (index.ts:325)
+    MM->>MM: loadModel(priority) (index.ts:343)
+    alt GPU 可用
+        MM->>SG: startSGLangServer(model.path) (sglang.ipc:492)
+        SG->>PY: spawn python -m sglang.launch_server
+    else GPU 不可用/未装
+        MM->>CPU: loadModel({gpuLayers:0}) (cpu-engine:119)
+    end

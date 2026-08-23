@@ -1,0 +1,34 @@
+# ============================================================
+# 玄枢电脑端 v3.1 — Python 依赖
+# 投机推理引擎 + 语音 + 搜索 + 微信连接 + UI
+# ============================================================
+flask>=2.3
+flask-cors
+psutil
+GPUtil
+requests
+aiohttp
+huggingface_hub
+tqdm
+loguru
+Pillow
+websocket-client
+numpy>=1.24,<2.0   # BUG-018 fix: 版本约束防止与 llama-cpp-python 二进制不兼容
+
+# ---- Edge TTS WinRT 语音合成（Windows 11 原生）----
+comtypes
+# winsdk  # 备选，与 comtypes 二选一
+
+# ---- 微信中转服务 ----
+# flask / flask-cors / requests 已在上面声明
+
+# ---- WebView2 浏览器引擎（Win11 内置 Edge Runtime，零部署）----
+# 使用 comtypes 通过 COM 接口操控，无需额外 pip 包
+
+# ---- 搜索引擎 HTTP 后端 ----
+beautifulsoup4
+lxml
+
+# ---- 可选：高性能 ASGI 服务 ----
+# uvicorn
+# fastapi

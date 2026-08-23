@@ -1,0 +1,294 @@
+classDiagram
+    direction TB
+
+    %% ── LLM Provider 层 ──
+    class LLMProvider {
+        <<interface>>
+        +string id
+        +string name
+        +string type
+        +generate(messages) Promise~string~
+        +generateStream(messages, onChunk, signal) Promise~void~
+        +listModels() Promise~string[]~
+    }
+
+    class SGLangProvider {
+        +string type = "sglang"
+        -string baseUrl
+        -string model
+        +generate(messages) Promise~string~
+        +generateStream(messages, onChunk, signal) Promise~void~
+        +listModels() Promise~string[]~
+    }
+
+    class OpenAIProvider {
+        +string type = "openai"
+        -string baseUrl
+        -string apiKey
+        -string model
+        +generate(messages) Promise~string~
+        +generateStream(messages, onChunk, signal) Promise~void~
+        +listModels() Promise~string[]~
+    }
+
+    class AnthropicProvider {
+        +string type = "anthropic"
+        -string baseUrl
+        -string apiKey
+        -string model
+        +generate(messages) Promise~string~
+        +generateStream(messages, onChunk, signal) Promise~void~
+        +listModels() Promise~string[]~
+    }
+
+    class OllamaProvider {
+        +string type = "ollama"
+        -string baseUrl
+        -string model
+        +generate(messages) Promise~string~
+        +generateStream(messages, onChunk, signal) Promise~void~
+        +listModels() Promise~string[]~
+    }
+
+    class LocalCPUProvider {
+        +string type = "localcpu"
+        -any session
+        -any model
+        -bool loaded
+        -ensureLoaded() Promise~bool~
+        +generate(messages) Promise~string~
+        +generateStream(messages, onChunk, signal) Promise~void~
+        +listModels() Promise~string[]~
+    }
+
+    class LocalGPUProvider {
+        +string type = "localgpu"
+    }
+
+    class ProviderRegistry {
+        -Map~string, LLMProvider~ providers
+        +registerProvider(provider) void
+        +getProvider(id) LLMProvider
+        +listProviders() LLMProvider[]
+        +createProvider(config) LLMProvider
+        +removeProvider(id) bool
+        +hasProvider(id) bool
+    }
+
+    LLMProvider <|.. SGLangProvider
+    LLMProvider <|.. OpenAIProvider
+    LLMProvider <|.. AnthropicProvider
+    LLMProvider <|.. OllamaProvider
+    LLMProvider <|.. LocalCPUProvider
+    LocalCPUProvider <|-- LocalGPUProvider
+    ProviderRegistry --> LLMProvider : manages
+
+    %% ── CPU 推理引擎 ──
+    class CpuInferenceEngine {
+        +any model
+        -any context
+        -any session
+        -bool loaded
+        -string currentModelPath
+        -ContextHistory chatHistory
+        +loadModel(config) Promise~bool~
+        +generate(prompt, options) Promise~string~
+        +unload() Promise~void~
+        +migrateToRAM() Promise~bool~
+        +restoreFromRAM() Promise~bool~
+        +setSystemPrompt(prompt) void
+        +clearHistory() void
+        +getStats() object
+        -buildFullPrompt(newMessage) string
+        -compressHistory() void
+    }
+
+    class isGpuAvailable {
+        <<function>>
+        +available bool
+        +vramMB number
+        +reason string
+    }
+
+    %% ── 模型管理器 ──
+    class ModelManager {
+        -Map~string, ModelInfo~ models
+        -CurrentModel currentModel
+        -string modelPath
+        -bool isGenerating
+        -HardwareInfo hw
+        -GpuModelType gpuModelType
+        -number IDLE_TIMEOUT_MS
+        +initialize() void
+        +registerModel(info) void
+        +loadModel(modelId) Promise~bool~
+        +unloadModel(modelId?) Promise~bool~
+        +switchModel(from, to) Promise~bool~
+        +swapToVision() Promise~bool~
+        +swapToQuality() Promise~bool~
+        +swapToMain() Promise~bool~
+        +generateResponse(prompt, opts) Promise~string~
+        +getLoadedModel() CurrentModel
+        +getModelRuntimeInfo() object
+        -tryCpuLoad(model) Promise~bool~
+        -loadQualityModel(model) Promise~bool~
+        -cleanupUnusedModels() void
+        -resetIdleTimer() void
+        -deriveGpuModelType(model) GpuModelType
+    }
+
+    class ModelInfo {
+        +string id
+        +string name
+        +string type
+        +string tier
+        +number gpuLayers
+        +string path
+        +number size
+        +bool loaded
+        +number lastUsed
+        +number memoryUsage
+        +number gpuUsage
+    }
+
+    class CurrentModel {
+        +string modelId
+        +string modelName
+        +string modelPath
+        +string modelType
+        +number loadedAt
+    }
+
+    class GpuModelType {
+        <<enumeration>>
+        main
+        quality
+        vision
+        null
+    }
+
+    ModelManager --> ModelInfo : manages
+    ModelManager --> CurrentModel : holds
+    ModelManager --> GpuModelType : tracks
+    ModelManager --> CpuInferenceEngine : delegates CPU
+    ModelManager --> isGpuAvailable : checks
+
+    %% ── SGLang IPC ──
+    class SGLangIPC {
+        -ChildProcess sglangProcess
+        -bool sglangReady
+        -string sglangModelPath
+        -string sglangMemFraction
+        +setupSGLangHandlers() void
+        +startSGLangServer(modelPath) Promise~bool~
+        +setSGLangMemFraction(fraction) void
+        -checkPort(port) Promise~bool~
+        -startSGLangWithModel(path) Promise~object~
+        -stopSGLang() Promise~void~
+        -httpGet(path) Promise~object~
+        -httpPost(path, body, timeout) Promise~object~
+    }
+
+    %% ── Python Runtime ──
+    class PythonRuntime {
+        -PythonEnv env
+        -WSLInfo wslInfo
+        -bool wslDetected
+        -number restartCount
+        +initialize() Promise~PythonEnv~
+        +reinitialize() Promise~PythonEnv~
+        +checkHealth() Promise~bool~
+        +startHeartbeat(intervalMs) void
+        +ensureSGLang() Promise~bool~
+        +detectWSL() Promise~WSLInfo~
+        +ensureWSLDetected() Promise~void~
+        +isWSLMode() bool
+        +getPythonPath() string
+        -checkPackedPython() Promise~bool~
+        -checkEmbeddedPython() Promise~bool~
+        -detectSystemPython() Promise~bool~
+    }
+
+    SGLangIPC --> PythonRuntime : uses
+
+    %% ── 硬件检测 ──
+    class HardwareInfo {
+        +bool hasDGPU
+        +string vendor
+        +string gpuName
+        +number vramMB
+        +number freeMB
+        +bool detected
+    }
+
+    class ModelRuntime {
+        +number gpuLayers
+        +number contextSize
+        +bool available
+        +string targetDevice
+        +string reason
+    }
+
+    class detectHardware {
+        <<function>>
+    }
+
+    class resolveModelRuntime {
+        <<function>>
+    }
+
+    HardwareInfo --> detectHardware : produced by
+    ModelRuntime --> resolveModelRuntime : produced by
+    resolveModelRuntime --> HardwareInfo : depends on
+
+    %% ── Chat IPC ──
+    class ChatIPC {
+        -Map~string, AbortController~ streamAbortControllers
+        +setupChatHandlers() void
+        -ensureLocalProvider() Promise~LLMProvider~
+        -buildRouteSignal(request) RouteSignal
+        -getSessionId(event, request) string
+    }
+
+    ChatIPC --> ProviderRegistry : uses
+    ChatIPC --> ModelManager : uses
+
+    %% ── 辩论引擎 ──
+    class DebateEngine {
+        -Map~string, DebateSession~ sessions
+        +startDebate(config) Promise~string~
+        +querySideA(sessionId, question) Promise~DebateMessage~
+        +querySideB(sessionId, question) Promise~DebateMessage~
+        +getHistory(sessionId) Promise~DebateMessage[]~
+        +stop(sessionId) Promise~void~
+        -generateWithCorrectEngine(question, opts) Promise~string~
+    }
+
+    class DebateSession {
+        +string id
+        +DebateConfig config
+        +DebateMessage[] messages
+        +bool active
+        +string currentTurn
+    }
+
+    DebateEngine --> DebateSession : manages
+    DebateEngine --> ModelManager : uses
+    DebateEngine --> CpuInferenceEngine : uses
+
+    %% ── 视觉推理 ──
+    class VisualReasoningEngine {
+        -Map~string, VisualTaskContext~ taskContexts
+        +decideNextAction(taskId, screen, intent, opts) Promise~ActionDecision~
+        +checkTaskCompletion(screen, intent, opts) Promise~object~
+        +analyzeFailure(before, after, action, opts) Promise~ActionDecision~
+        +planTask(intent, opts) Promise~object[]~
+        +resetTask(taskId) void
+        -invokeModel(prompt, opts) Promise~string~
+        -parseDecision(response) ActionDecision
+        -buildDecisionPrompt(screen, ctx, intent) string
+        -handleErrorState(ctx, screen) ActionDecision
+    }
+
+    VisualReasoningEngine --> ModelManager : may use indirectly
+    VisualReasoningEngine --> CpuInferenceEngine : fallback

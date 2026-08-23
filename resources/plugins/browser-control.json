@@ -1,0 +1,20 @@
+{
+  "id": "browser-control",
+  "name": "浏览器操控",
+  "description": "打开URL/点击/填表/截图",
+  "level": "simple",
+  "triggers": ["浏览器", "打开网页", "打开网址", "填表", "截图网页", "搜索网页"],
+  "function_schema": {
+    "name": "browser_control",
+    "description": "操控浏览器执行操作",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["open", "search", "screenshot"]},
+        "url": {"type": "string", "description": "目标URL"},
+        "query": {"type": "string", "description": "搜索关键词"}
+      },
+      "required": ["action"]
+    }
+  }
+}

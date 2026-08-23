@@ -1,0 +1,22 @@
+{
+  "id": "file-ops",
+  "name": "文件管理",
+  "description": "文件搜索/移动/复制/删除/批量重命名",
+  "level": "simple",
+  "triggers": ["文件", "搜索文件", "移动", "复制", "删除文件", "重命名", "批量", "整理文件"],
+  "function_schema": {
+    "name": "file_ops",
+    "description": "执行文件管理操作",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["search", "move", "copy", "delete", "rename", "list"]},
+        "source": {"type": "string", "description": "源路径或搜索关键词"},
+        "destination": {"type": "string", "description": "目标路径"},
+        "pattern": {"type": "string", "description": "文件名匹配模式"},
+        "recursive": {"type": "boolean", "default": false}
+      },
+      "required": ["action"]
+    }
+  }
+}

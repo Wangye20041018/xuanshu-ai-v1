@@ -1,0 +1,21 @@
+{
+  "id": "container-deploy",
+  "name": "容器化部署",
+  "description": "Docker Compose生成/镜像管理/K8s配置",
+  "level": "heavy",
+  "triggers": ["Docker", "容器", "部署", "K8s", "Kubernetes", "镜像", "Compose", "dockerfile"],
+  "function_schema": {
+    "name": "container_deploy",
+    "description": "容器化部署工具",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["docker_ps", "docker_images", "generate_compose", "generate_dockerfile", "docker_stats"]},
+        "stack_name": {"type": "string", "description": "堆栈名称"},
+        "services": {"type": "string", "description": "服务描述JSON"},
+        "app_type": {"type": "string", "description": "应用类型 (python/node/static)"}
+      },
+      "required": ["action"]
+    }
+  }
+}

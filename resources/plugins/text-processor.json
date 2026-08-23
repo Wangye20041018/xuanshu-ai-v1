@@ -1,0 +1,21 @@
+{
+  "id": "text-processor",
+  "name": "文本处理",
+  "description": "正则替换/格式转换/编码转换",
+  "level": "simple",
+  "triggers": ["文本处理", "正则", "替换", "格式转换", "编码", "JSON", "CSV"],
+  "function_schema": {
+    "name": "text_processor",
+    "description": "文本处理工具",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["regex_replace", "json_format", "csv_parse", "base64", "md5", "count"]},
+        "text": {"type": "string"},
+        "pattern": {"type": "string"},
+        "replacement": {"type": "string"}
+      },
+      "required": ["action", "text"]
+    }
+  }
+}

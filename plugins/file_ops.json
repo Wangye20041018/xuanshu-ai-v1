@@ -1,0 +1,22 @@
+{
+  "id": "file_ops",
+  "name": "文件管理",
+  "description": "文件搜索、移动、复制、删除、批量重命名等操作",
+  "level": "simple",
+  "triggers": ["文件", "搜索文件", "移动", "复制", "删除文件", "重命名", "批量", "文件夹", "目录"],
+  "function_schema": {
+    "name": "file_operations",
+    "description": "执行文件系统操作：搜索、移动、复制、删除、重命名文件或文件夹",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["search", "move", "copy", "delete", "rename", "list", "mkdir"], "description": "操作类型"},
+        "source": {"type": "string", "description": "源路径或搜索关键词"},
+        "destination": {"type": "string", "description": "目标路径（move/copy/rename 时使用）"},
+        "pattern": {"type": "string", "description": "文件名匹配模式（search 时使用，如 *.pdf）"},
+        "recursive": {"type": "boolean", "description": "是否递归搜索子目录", "default": false}
+      },
+      "required": ["action", "source"]
+    }
+  }
+}

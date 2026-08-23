@@ -1,0 +1,122 @@
+appId: com.xuanshu.app
+productName: 玄枢AI
+copyright: © 2026 玄枢AI
+directories:
+  output: ./__app_pkg__
+files:
+  - out
+  - package.json
+  - node_modules/@electron-toolkit/utils/**/*
+  - node_modules/better-sqlite3/**/*
+  - node_modules/node-llama-cpp/**/*
+  - node_modules/ws/**/*
+  - node_modules/bufferutil/**/*
+  - node_modules/ajv/**/*
+  - node_modules/ajv-formats/**/*
+  - node_modules/tiktoken/**/*
+  - node_modules/electron-updater/**/*
+  - "!node_modules/**/*.map"
+  - "!node_modules/**/*.ts"
+  - "!node_modules/**/src/**"
+  - "!node_modules/**/docs/**"
+asar: true
+asarUnpack:
+  - node_modules/better-sqlite3/**
+  - node_modules/node-llama-cpp/**
+  - node_modules/bufferutil/**
+  - node_modules/ws/**
+  - "**/*.node"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: resources/icons/icon.ico
+  requestedExecutionLevel: requireAdministrator
+  # 代码签名：使用自签名证书签名，避免 SmartScreen 拦截
+  # 首次使用前请运行: powershell -ExecutionPolicy Bypass -File scripts/generate-cert.ps1
+  # 用户端安装证书: scripts/install-cert.bat（需管理员权限）
+  certificateFile: resources/cert/xuanshu-root.pfx
+  certificatePassword: ${env.CERT_PASSWORD}
+  # 注意：llama-server.exe / ffmpeg.exe 不是签名工具，不可配置在 sign 字段。
+  # 如需对附加 exe 签名，请在 afterPack 钩子中调用 signtool 处理。
+  signAndEditExecutable: true
+  publisherName: "玄枢AI"
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: resources/icons/icon.ico
+  artifactName: XuanShuAI_Setup_${version}.${ext}
+portable:
+  artifactName: XuanShuAI_${version}_Portable.${ext}
+publish:
+  # 需要替换为实际更新服务器URL
+  provider: generic
+  url: https://updates.xuanshu.ai
+extraMetadata:
+  main: out/main/index.js
+extraResources:
+  - from: resources/icons
+    to: icons
+  - from: resources/python
+    to: python
+  - from: resources/vc_dll
+    to: vc_dll
+  - from: resources/vc_redist
+    to: vc_redist
+  - from: resources/sglang
+    to: sglang
+  - from: resources/voice-models
+    to: voice-models
+  - from: resources/models
+    to: models
+    filter:
+      - "!qwen3.5-9b.gguf"
+      - "!internvl2.5-14b.gguf"
+  - from: src/main/visual-agent/common-knowledge
+    to: knowledge
+  - from: resources/engine
+    to: engine
+    # 打包卫生：排除开发产物，避免把本机运行日志（可能含隐私）、
+    # Python 字节码缓存与历史备份文件分发给最终用户。
+    filter:
+      - "!__pycache__/**"
+      - "!logs/**"
+      - "!*_20*.py"
+      - "!DEPRECATED.md"
+  - from: resources/plugins
+    to: plugins
+  - from: resources/personas
+    to: personas
+  - from: resources/apps
+    to: apps
+  - from: resources/orbs
+    to: orbs
+  - from: resources/
+    to: .
+    filter:
+      - llama-server.exe
+      - llama-server-impl.dll
+      - llama-common.dll
+      - llama.dll
+      - ggml-*.dll
+      - mtmd.dll
+      - libomp*.dll
+      - ffmpeg.exe
+      - ffplay.exe
+      - ffprobe.exe
+      - av*.dll
+      - swresample-*.dll
+      - swscale-*.dll
+      - postproc-*.dll
+      - cublas64_*.dll
+      - cublasLt64_*.dll
+      - cudart64_*.dll
+      - floating-ball.html
+  - from: resources/fonts
+    to: fonts
+  - from: resources/piper
+    to: piper

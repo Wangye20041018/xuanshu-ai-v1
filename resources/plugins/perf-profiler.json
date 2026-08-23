@@ -1,0 +1,20 @@
+{
+  "id": "perf-profiler",
+  "name": "性能剖析",
+  "description": "代码profiling/内存泄漏检测/火焰图生成",
+  "level": "heavy",
+  "triggers": ["性能", "profiling", "内存泄漏", "分析性能", "慢", "瓶颈", "火焰图", "CPU分析"],
+  "function_schema": {
+    "name": "perf_profiler",
+    "description": "代码性能剖析工具",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["profile_script", "memory_snapshot", "analyze_log"]},
+        "script_path": {"type": "string"},
+        "duration": {"type": "integer", "default": 10, "description": "采样持续时间（秒）"}
+      },
+      "required": ["action"]
+    }
+  }
+}

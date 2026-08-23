@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+echo "===== Pre-commit: lint-staged ====="
+npx lint-staged
+
+echo "===== Pre-commit: TypeScript type-check ====="
+npx tsc --noEmit
+
+echo "===== Pre-commit: audit ====="
+npm audit --audit-level=high --production || true

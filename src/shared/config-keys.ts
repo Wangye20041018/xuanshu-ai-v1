@@ -1,0 +1,28 @@
+export const CONFIG_KEYS = {
+  AUTO_UPDATE: 'autoUpdate',
+  SEND_STATS: 'sendStats',
+  AUTO_START: 'autoStart',
+  SYSTEM_PROMPT: 'systemPrompt',
+  USER_PROFILE: 'userProfile',
+  CLOUD_API_KEY: 'cloudApiKey',
+  CLOUD_API_URL: 'cloudApiUrl',
+  CLOUD_MODEL_NAME: 'cloudModelName',
+  SKILL_COMBO: 'skillCombo',
+  VOICE_EXIT_WORD: 'voiceExitWord',
+  VOICE_EXIT_CONFIRM_WORDS: 'voiceExitConfirmWords',
+  VOICE_EXIT_CANCEL_WORDS: 'voiceExitCancelWords',
+  VOICE_EXIT_CONFIRM_TTS: 'voiceExitConfirmTTS',
+  VOICE_CONTINUOUS_MODE: 'voiceContinuousMode',
+  STARTUP_MODEL_ID: 'startupModelId',
+  MODEL_7B_PATH: 'model7bPath',
+  VISION_MODEL_PATH: 'visionModelPath',
+  MMPROJ_PATH: 'mmprojPath',
+  EMBEDDING_MODEL_PATH: 'embeddingModelPath',
+  ORB_THEME: 'orbTheme',
+  ORB_SIZE: 'orbSize',
+  TANDEM_CONFIG: 'tandemConfig',
+  NOISE_FILTER_ON: 'noiseFilterOn',
+  NOISE_LEVEL: 'noiseLevel',
+} as const
+
+export const skillKey = (skillId: string) => `skill_${skillId}`
