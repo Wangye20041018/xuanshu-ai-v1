@@ -596,7 +596,7 @@ export default function Home() {
             <div style={{
               position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)',
               zIndex: 50, maxWidth: 640, width: 'calc(100% - 48px)',
-              background: 'rgba(24,26,35,0.96)', border: `1px solid ${'#3b82f6'}44`,
+              background: 'rgba(24,26,35,0.96)', border: `1px solid ${HEX_COLORS.blue}44`,
               borderRadius: 14, padding: '12px 14px', boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
               backdropFilter: 'blur(10px)',
             }}>

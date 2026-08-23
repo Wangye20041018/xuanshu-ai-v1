@@ -1,10 +1,13 @@
-﻿import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Zap, Plus, Play, Pause, AlertCircle, Clock, Trash2, Monitor, FileText, Timer, Activity, List, X, FolderOpen } from 'lucide-react'
 import { HEX_COLORS, COLORS, containerVariants, itemVariants, listItemVariants } from '../../shared/theme'
 
 import { logger } from '../../../shared/logger'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { EmptyState } from '../../components/EmptyState'
+import { ErrorDisplay } from '../../components/ErrorDisplay'
+import { showToast } from '../../components/Toast'
 import { useTranslation } from '../../i18n'
 
 /* ==================== Types ==================== */
@@ -70,7 +73,7 @@ function TriggerBadge({ type }: { type: TriggerType }) {
     schedule: { icon: <Timer size={13} />, label: '定时', color: COLORS.accent },
     file_watch: { icon: <FileText size={13} />, label: '文件监控', color: COLORS.success },
     system_event: { icon: <Monitor size={13} />, label: '系统事件', color: COLORS.warning },
-    sequence: { icon: <List size={13} />, label: '序列', color: '#a78bfa' },
+    sequence: { icon: <List size={13} />, label: '序列', color: HEX_COLORS.violetLight },
   }
   const c = config[type]
   return (
@@ -87,7 +90,7 @@ function TriggerBadge({ type }: { type: TriggerType }) {
 /* ==================== Category Badge ==================== */
 function CategoryBadge({ category }: { category: TaskCategory }) {
   const config: Record<TaskCategory, { label: string; color: string }> = {
-    file: { label: '文件', color: '#3b82f6' },
+    file: { label: '文件', color: HEX_COLORS.blue },
     system: { label: '系统', color: COLORS.violet },
     sync: { label: '同步', color: COLORS.successAlt },
     notification: { label: '通知', color: COLORS.warning },
@@ -132,50 +135,13 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
   )
 }
 
-/* ==================== Empty State ==================== */
-function EmptyState({ onCreate }: { onCreate: () => void }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 24 }}
-      animate={{ opacity: 1, y: 0 }}
-      style={{
-        background: COLORS.cardBg, border: '1px solid ' + COLORS.cardBorder,
-        borderRadius: 'var(--radius-2xl)', padding: '40px', textAlign: 'center',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16,
-      }}
-    >
-      <Zap size={40} style={{ color: COLORS.textMuted, opacity: 0.3 }} />
-      <div>
-        <p style={{ color: COLORS.textSecondary, margin: 0, fontSize: 14, fontWeight: 500 }}>
-          暂无自动化任务
-        </p>
-        <p style={{ color: COLORS.textMuted, margin: '6px 0 0', fontSize: 12 }}>
-          创建第一个自动化，简化重复性工作
-        </p>
-      </div>
-      <motion.button
-        whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
-        onClick={onCreate}
-        style={{
-          padding: '10px 24px', borderRadius: 'var(--radius-2xl)', cursor: 'pointer',
-          background: COLORS.accent, border: 'none', color: '#fff',
-          fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
-          display: 'flex', alignItems: 'center', gap: 8,
-        }}
-      >
-        <Plus size={15} /> 新建自动化
-      </motion.button>
-    </motion.div>
-  )
-}
-
 /* ==================== Type Overview Cards ==================== */
 function TypeOverview() {
   const types: { icon: React.ReactNode; label: string; desc: string; color: string }[] = [
     { icon: <Timer size={18} />, label: '定时任务', desc: '在指定时间或间隔运行', color: COLORS.accent },
     { icon: <FileText size={18} />, label: '文件监控', desc: '监控文件夹中的文件变更', color: COLORS.success },
     { icon: <Monitor size={18} />, label: '系统事件', desc: '响应设备、网络或电源事件', color: COLORS.warning },
-    { icon: <List size={18} />, label: '序列任务', desc: '多步骤按序执行', color: '#a78bfa' },
+    { icon: <List size={18} />, label: '序列任务', desc: '多步骤按序执行', color: HEX_COLORS.violetLight },
   ]
 
   return (
@@ -251,6 +217,7 @@ export default function Automation() {
     steps: [] as SequenceStep[],
   })
   const [isAdding, setIsAdding] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const stepIdCounter = useRef(0)
   const genStepId = (): string => `step_${Date.now()}_${++stepIdCounter.current}`
 
@@ -284,19 +251,20 @@ export default function Automation() {
   }
 
   /* ------ Load Tasks ------ */
-  useEffect(() => {
-    async function load() {
-      if (window.api) {
-        try {
-          const result = await window.api.invoke<AutomationTask[]>('automation:list')
-          if (result) setTasks(result)
-        } catch {
-          logger.error('[Automation] 无法加载任务列表')
-        }
-      }
+  const loadTasks = useCallback(async () => {
+    if (!window.api) return
+    const res = await window.api.invokeSafe<AutomationTask[]>('automation:list')
+    if (res.ok && res.data) {
+      setTasks(res.data)
+      setLoadError(null)
+    } else {
+      setLoadError(res.error || '加载自动化任务失败')
     }
-    load()
   }, [])
+
+  useEffect(() => {
+    loadTasks()
+  }, [loadTasks])
 
   /* ------ Toggle ------ */
   const handleToggle = async (id: string, enabled: boolean) => {
@@ -322,10 +290,11 @@ export default function Automation() {
   /* ------ Delete ------ */
   const handleDelete = async (id: string) => {
     if (window.api) {
-      try {
-        await window.api.invoke('automation:delete', id)
+      const res = await window.api.invokeSafe<{ success?: boolean }>('automation:delete', id)
+      if (res.ok) {
         setTasks(prev => prev.filter(t => t.id !== id))
-      } catch (e) { logger.error('[Automation] delete失败:', e) }
+        showToast('success', '已删除自动化任务')
+      }
     } else {
       setTasks(prev => prev.filter(t => t.id !== id))
     }
@@ -338,21 +307,20 @@ export default function Automation() {
     setExecutingTaskId(id)
     try {
       if (window.api) {
-        const result = await window.api.invoke<{ success: boolean; error?: string }>('automation:execute', id)
-        if (result?.success) {
+        const result = await window.api.invokeSafe<{ success: boolean; error?: string }>('automation:execute', id)
+        if (result.ok && result.data?.success) {
           setTasks(prev => prev.map(t =>
             t.id === id ? { ...t, lastRun: new Date().toLocaleString() } : t
           ))
-        } else {
-          logger.error('[Automation] 执行失败:', result?.error)
+          showToast('success', '任务已执行')
+        } else if (result.data && !result.data.success) {
+          showToast('error', result.data.error || '执行失败')
         }
       } else {
         setTasks(prev => prev.map(t =>
           t.id === id ? { ...t, lastRun: new Date().toLocaleString() } : t
         ))
       }
-    } catch (e) {
-      logger.error('[Automation] executeNow失败:', e)
     } finally {
       setExecutingTaskId(null)
     }
@@ -728,8 +696,14 @@ export default function Automation() {
             我的自动化（{tasks.length}）
           </h3>
 
-          {tasks.length === 0 ? (
-            <EmptyState onCreate={() => setShowModal(true)} />
+          {loadError ? (
+            <ErrorDisplay type="unknown" title="加载失败" message={loadError} onRetry={() => loadTasks()} />
+          ) : tasks.length === 0 ? (
+            <EmptyState
+              title="暂无自动化任务"
+              description="创建第一个自动化，简化重复性工作"
+              action={{ label: '新建自动化', onClick: () => setShowModal(true) }}
+            />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <AnimatePresence>
@@ -756,7 +730,7 @@ export default function Automation() {
                       <motion.div
                         animate={{
                           color: task.status === 'running' ? COLORS.success : task.status === 'error' ? COLORS.danger :
-                            task.triggerType === 'sequence' ? '#a78bfa' : COLORS.textMuted,
+                            task.triggerType === 'sequence' ? HEX_COLORS.violetLight : COLORS.textMuted,
                           scale: task.status === 'running' ? [1, 1.05, 1] : 1,
                         }}
                         transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
@@ -822,6 +796,7 @@ export default function Automation() {
                       <motion.button
                         whileHover={{ scale: 1.15 }} whileTap={{ scale: 0.85 }}
                         onClick={() => handleDelete(task.id)}
+                        aria-label={`删除自动化任务: ${task.name}`}
                         style={{
                           background: 'none', border: 'none', cursor: 'pointer',
                           color: COLORS.textMuted, padding: 4, display: 'flex',

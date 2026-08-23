@@ -627,7 +627,7 @@ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
 background: model.mode === 'hybrid' ? `${HEX_COLORS.success}1a` :
 model.mode === 'fallback' ? COLORS.warningDim : 'rgba(59,130,246,0.1)',
                   color: model.mode === 'hybrid' ? COLORS.success :
-                         model.mode === 'fallback' ? COLORS.warning : '#3b82f6',
+                         model.mode === 'fallback' ? COLORS.warning : HEX_COLORS.blue,
                 }}>{MODE_LABELS[model.mode]}</span>
                 {/* 配额使用 */}
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
@@ -1522,11 +1522,11 @@ borderRadius: '0 0 2px 2px',
               textAlign: 'center', cursor: 'default',
               transition: 'all 0.2s',
             }}>
-            <FolderOpen size={40} color={waitingForMmproj ? '#a78bfa' : isDragging ? COLORS.accent : COLORS.textMuted}
+            <FolderOpen size={40} color={waitingForMmproj ? HEX_COLORS.violetLight : isDragging ? COLORS.accent : COLORS.textMuted}
               style={{ marginBottom: 12, opacity: registryModels.length === 0 && !isDragging && !waitingForMmproj && !importingFiles.length ? 0.6 : 1 }} />
             {waitingForMmproj ? (
               <>
-                <p style={{ fontSize: 15, color: '#a78bfa', fontWeight: 600, margin: '0 0 4px' }}>
+                <p style={{ fontSize: 15, color: HEX_COLORS.violetLight, fontWeight: 600, margin: '0 0 4px' }}>
                   等待投影层文件...
                 </p>
                 <p style={{ fontSize: 13, color: COLORS.textSecondary, margin: '0 0 8px' }}>
@@ -1655,7 +1655,7 @@ borderRadius: '0 0 2px 2px',
                           color: isGpu ? COLORS.success : COLORS.warning, fontWeight: 600,
                         }}>{isGpu ? 'GPU' : 'CPU'}</span>
                         {m.type === 'vision' && (
-                          <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: COLORS.violetDim, color: '#a78bfa', fontWeight: 600 }}>视觉</span>
+                          <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: COLORS.violetDim, color: HEX_COLORS.violetLight, fontWeight: 600 }}>视觉</span>
                         )}
                         {s && (
                           <span style={{
@@ -1718,7 +1718,7 @@ background: rm.mode === 'gpu' ? COLORS.successDim : COLORS.warningDim,
                             fontWeight: 600,
                           }}>{rm.mode === 'gpu' ? 'GPU' : 'CPU'}</span>
                           {rm.type === 'vision' && (
-<span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: COLORS.violetDim, color: '#a78bfa', fontWeight: 600 }}>视觉</span>
+<span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: COLORS.violetDim, color: HEX_COLORS.violetLight, fontWeight: 600 }}>视觉</span>
                           )}
                           {rm.isDefault && (
 <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: `${HEX_COLORS.accent}15`, color: COLORS.accent, fontWeight: 600 }}>默认</span>
@@ -1808,7 +1808,7 @@ background: model.isActive ? `${HEX_COLORS.accent}20` : 'rgba(255,255,255,0.03)'
 background: model.type === 'vision' ? `${HEX_COLORS.violet}26` :
                                        model.type === 'embedding' ? 'rgba(59,130,246,0.15)' :
 COLORS.successDim,
-                          color: model.type === 'vision' ? '#a78bfa' :
+                          color: model.type === 'vision' ? HEX_COLORS.violetLight :
                                   model.type === 'embedding' ? '#60a5fa' :
                                   COLORS.success,
                           fontWeight: 600,

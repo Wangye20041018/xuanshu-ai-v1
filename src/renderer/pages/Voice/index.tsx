@@ -7,6 +7,7 @@ import { useTranslation } from '../../i18n'
 import { BUILT_IN_PRESETS, LEGACY_VOICE_ID_MAP } from '../../shared/voicePresets'
 import { logger } from '../../../shared/logger'
 import { HEX_COLORS, COLORS, containerVariants, itemVariants, listItemVariants } from '../../shared/theme'
+import { showToast } from '../../components/Toast'
 
 /* ============================================================ */
 /* 本地常量（全局主题未覆盖的颜色） */
@@ -134,6 +135,7 @@ function Voice() {
           }
         } catch (e) {
           logger.warn('[Voice] TTS状态检查失败:', e)
+          showToast('warning', 'TTS 引擎状态检查失败，已降级为浏览器语音')
           setTtsStatus(prev => ({ ...prev, checked: true }))
         }
       } else {

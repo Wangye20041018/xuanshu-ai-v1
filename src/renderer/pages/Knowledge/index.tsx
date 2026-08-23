@@ -6,6 +6,7 @@ import { HEX_COLORS, COLORS, containerVariants, itemVariants, listItemVariants }
 import { logger } from '../../../shared/logger'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { ErrorDisplay } from '../../components/ErrorDisplay'
+import { EmptyState } from '../../components/EmptyState'
 import { useTranslation } from '../../i18n'
 import { FocusTrap } from '../../components/a11y'
 import { showToast } from '../../components/Toast'
@@ -528,21 +529,11 @@ export default function Knowledge() {
           </h3>
 
           {docs.length === 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 24 }}
-              animate={{ opacity: 1, y: 0 }}
-              style={{
-                background: COLORS.cardBg, border: '1px solid ' + COLORS.cardBorder,
-                borderRadius: 'var(--radius-2xl)', padding: '28px', textAlign: 'center',
-                boxShadow: 'var(--shadow-card)',
-              }}
-            >
-              <Search size={32} style={{ color: COLORS.textMuted, opacity: 0.4 }} />
-              <p style={{ color: COLORS.textSecondary, marginTop: 12 }}>未找到文档。添加知识以增强 RAG。</p>
-              <p style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 4 }}>
-                点击「添加知识」或导入文件/文件夹开始使用
-              </p>
-            </motion.div>
+            <EmptyState
+              title="未找到文档"
+              description="添加知识以增强 RAG，点击「添加知识」或导入文件/文件夹开始使用"
+              icon={<Search size={32} style={{ color: COLORS.textMuted, opacity: 0.4 }} />}
+            />
           )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

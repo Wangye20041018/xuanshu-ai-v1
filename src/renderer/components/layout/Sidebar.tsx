@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   MessageSquare, Mic, Settings, Brain, BookOpen, Puzzle,
-  Zap, Monitor, ChevronLeft, ChevronRight
+  Zap, Monitor, ChevronLeft, ChevronRight, Wrench
 } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 
@@ -35,6 +35,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'knowledge', labelKey: 'sidebar.knowledge', icon: <BookOpen size={18} />, path: '/knowledge' },
       { id: 'plugins', labelKey: 'sidebar.plugins', icon: <Puzzle size={18} />, path: '/plugins' },
       { id: 'automation', labelKey: 'sidebar.automation', icon: <Zap size={18} />, path: '/automation' },
+      { id: 'selfmodify', labelKey: 'sidebar.selfModify', icon: <Wrench size={18} />, path: '/self-modify' },
     ],
   },
 ]

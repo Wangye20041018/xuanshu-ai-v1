@@ -12,6 +12,7 @@ declare global {
     api: {
       invoke: <T = unknown>(channel: IpcChannels, ...args: unknown[]) => Promise<T>
       invokeWithTimeout: <T = unknown>(channel: IpcChannels, timeoutMs: number, ...args: unknown[]) => Promise<T>
+      invokeSafe: <T = unknown>(channel: IpcChannels, ...args: unknown[]) => Promise<{ ok: boolean; data?: T; error?: string }>
       send: (channel: IpcChannels, ...args: unknown[]) => void
       on: (channel: IpcChannels, callback: (event: import('electron').IpcRendererEvent, ...args: unknown[]) => void) => () => void
       once: (channel: IpcChannels, callback: (...args: unknown[]) => void) => void

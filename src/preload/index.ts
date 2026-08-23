@@ -479,6 +479,15 @@ export type IpcChannels =
   | 'backup:import'
   | 'backup:get-info'
   | 'backup:restore-localstorage'
+  | 'self-modify:get-capabilities'
+  | 'self-modify:list-files'
+  | 'self-modify:read-file'
+  | 'self-modify:generate'
+  | 'self-modify:preview-diff'
+  | 'self-modify:apply'
+  | 'self-modify:rollback'
+  | 'self-modify:list-snapshots'
+  | 'self-modify:progress'
 
 export const TTS_CHANNELS = {
   SPEAK: 'tts:speak' as const,
@@ -508,6 +517,33 @@ const api = {
       timeoutId = setTimeout(() => reject(new Error(`IPC 调用超时: ${channel} (${timeoutMs}ms)`)), timeoutMs)
     })
     return Promise.race([invokePromise, timeoutPromise]).finally(() => clearTimeout(timeoutId)) as Promise<T>
+  },
+
+  /**
+   * 安全 invoke：失败不抛出，统一返回 { ok, data?, error? }，
+   * 并派发 DOM 事件通知渲染层展示全局 toast（避免各页面静默失败）。
+   * 注意：不改变既有 invoke 语义，仅新增一层可选的失败统一提示入口。
+   */
+  invokeSafe: async <T = unknown>(channel: IpcChannels, ...args: unknown[]): Promise<{ ok: boolean; data?: T; error?: string }> => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const invokePromise = ipcRenderer.invoke(channel, ...args)
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(`IPC 调用超时: ${channel} (30s)`)), 30000)
+    })
+    try {
+      const data = (await Promise.race([invokePromise, timeoutPromise])) as T
+      return { ok: true, data }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      try {
+        window.dispatchEvent(new CustomEvent('xuanshu:ipc-error', { detail: { channel, message } }))
+      } catch {
+        /* 忽略派发失败 */
+      }
+      return { ok: false, error: message }
+    } finally {
+      clearTimeout(timeoutId)
+    }
   },
 
   send: (channel: IpcChannels, ...args: unknown[]): void => {

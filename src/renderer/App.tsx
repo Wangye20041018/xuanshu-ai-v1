@@ -7,6 +7,7 @@ import StatusBar from './components/layout/StatusBar'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ToastContainer } from './components/Toast'
 import { LoadingSkeleton } from './components/LoadingSkeleton'
+import Onboarding from './components/Onboarding'
 import { SkipLink } from './components/a11y'
 import ControlOverlay from './components/ControlOverlay'
 import { useTranslation } from './i18n'
@@ -23,6 +24,7 @@ const Knowledge = lazy(() => import('./pages/Knowledge'))
 const Plugins = lazy(() => import('./pages/Plugins'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Automation = lazy(() => import('./pages/Automation'))
+const SelfModify = lazy(() => import('./pages/SelfModify'))
 
 /** 模块状态快照 */
 interface ModuleStatus {
@@ -189,30 +191,7 @@ function App() {
         fontFamily: "'Work Sans', 'Noto Sans SC', system-ui, sans-serif",
         userSelect: 'none'
       }}>
-        <div style={{
-          fontFamily: "'Playfair Display', 'Noto Serif SC', serif",
-          fontSize: 28, fontWeight: 700,
-          color: 'var(--accent)', letterSpacing: 4,
-          marginBottom: 16
-        }}>{t('common.appName')}</div>
-        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)', letterSpacing: 1 }}>
-          {t('chat.modelLoading')}
-        </div>
-        <div style={{
-          width: 280, height: 2,
-          background: 'rgba(255,255,255,0.06)',
-          borderRadius: 1, marginTop: 28,
-          overflow: 'hidden'
-        }}>
-          <div style={{
-            height: '100%',
-            background: 'linear-gradient(90deg, transparent, var(--accent), transparent)',
-            borderRadius: 1,
-            animation: 'xuanshu-progress 2s ease-in-out infinite',
-            width: '40%',
-            marginLeft: '-100%'
-          }} />
-        </div>
+        <LoadingSkeleton variant="page" lines={4} loadingText={t('chat.modelLoading')} />
       </div>
     )
   }
@@ -408,6 +387,7 @@ function App() {
                       <Route path="/plugins" element={<Plugins />} />
                       <Route path="/settings" element={<Settings />} />
                       <Route path="/automation" element={<Automation />} />
+                      <Route path="/self-modify" element={<SelfModify />} />
                     </Routes>
                   </Suspense>
                 </motion.div>
@@ -418,6 +398,7 @@ function App() {
       </div>
       <ControlOverlay />
       <ToastContainer />
+      <Onboarding />
     </ErrorBoundary>
   )
 }

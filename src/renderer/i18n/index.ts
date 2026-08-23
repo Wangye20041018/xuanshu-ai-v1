@@ -44,6 +44,7 @@ const zh_CN: TranslationTable = {
     knowledge: '知识',
     plugins: '智囊团',
     automation: '自动化',
+    selfModify: '自我改造',
     settings: '设置',
     section: {
       features: '功能',
@@ -228,6 +229,7 @@ const en_US: TranslationTable = {
     knowledge: 'Knowledge',
     plugins: 'Plugins',
     automation: 'Automation',
+    selfModify: 'Self-Modify',
     settings: 'Settings',
     section: {
       features: 'Features',

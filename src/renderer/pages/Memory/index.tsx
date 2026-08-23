@@ -5,14 +5,12 @@ import { HEX_COLORS, COLORS, containerVariants, itemVariants } from '../../share
 
 import { Search, Trash2, Clock, Database, Brain, MessageSquare, Heart, Lightbulb, X, Info, ChevronDown } from 'lucide-react'
 
-
 import { CONFIG_KEYS } from '../../../shared/config-keys'
 import { logger } from '../../../shared/logger'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { showToast } from '../../components/Toast'
+import { EmptyState } from '../../components/EmptyState'
 import type { ConfigData } from '../../../shared/ipc-types'
-
-/* ==================== Ã¥Â¿ÂÃ¨ÂÂ¨Ã¦Â¥Â¼Ã¦Â°ÂÃ¨ÂÂ«Ã¦ÂÂ¢Ã¦Â°ÂÃ¥ÂºÂÃ¨ÂÂ·Ã§ÂÂ²Ã©Â¹Â¿Ã¨ÂÂ£ ==================== */
 
 interface MemoryItem {
 
@@ -39,8 +37,6 @@ interface RAGStats {
   knowledge: number
 
 }
-
-/* ==================== Ã§ÂÂ«Ã¥ÂºÂÃ¦ÂÂ®Ã§ÂÂ«Ã¥ÂºÂÃ©ÂÂÃ§ÂÂ²Ã§Â¦ÂÃ©ÂÂÃ¨ÂÂ½Ã¨ÂÂ£Ã¨ÂÂ¦ ==================== */
 
 const statContainerVariants = {
 
@@ -80,8 +76,6 @@ const statItemVariants = {
 
 }
 
-/* ==================== é¾èå´µç»å¬ç³é±æä»´è¹æ¬ä¼£é±Â¤å¹æ£°å®åé¼å°ä»§é±Ñå°é±ï½æª?==================== */
-
 const typeConfig: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
 
   conversation: {
@@ -115,8 +109,6 @@ const typeConfig: Record<string, { label: string; color: string; icon: React.Rea
   },
 
 }
-
-/* ==================== Ã§ÂÂ«Ã§ÂÂÃ¥Â¨ÂÃ¥Â¿ÂÃ¨ÂÂÃ¨ÂÂÃ¦Â°ÂÃ¥Â½ÂÃ©Â¹Â¿Ã¨ÂÂ½Ã©ÂÂÃ¨ÂÂ´ ==================== */
 
 function DetailModal({ memory, onClose, onSave }: { memory: MemoryItem; onClose: () => void; onSave: (id: string, data: { content: string; tags: string[] }) => void }) {
 
@@ -353,7 +345,6 @@ style={{ minHeight: 36, minWidth: 36, display: 'flex', alignItems: 'center', jus
   )
 
 }
-/* ==================== Ã¥Â¿ÂÃ§Â¢ÂÃ¨ÂÂÃ¦Â°ÂÃ¨ÂÂÃ¨ÂÂ£Ã§ÂÂ«Ã©Â©Â´Ã¨ÂÂ¸Ã¦Â°ÂÃ¦Â½ÂÃ¥Â¨ÂÃ¥Â¿ÂÃ¨ÂÂºÃ©ÂÂÃ¨ÂÂ½Ã§Â¦ÂÃ¨ÂÂÃ§ÂÂ²Ã§Â¦Â?==================== */
 
 function ShimmerBar({ score }: { score: number }) {
 
@@ -393,8 +384,6 @@ function ShimmerBar({ score }: { score: number }) {
   )
 
 }
-
-/* ==================== Ã§ÂÂ²Ã¨ÂµÂÃ§Â¦ÂÃ¨ÂÂ½Ã§Â¦ÂÃ¨ÂÂÃ§ÂÂ²Ã§Â¦Â?==================== */
 
 function Memory() {
 
@@ -448,8 +437,6 @@ function Memory() {
 
   }, [])
 
-  /* ---------- IPC Ã§ÂÂ«Ã¦ÂÂ³Ã¨ÂÂÃ¨ÂÂ½Ã¨ÂÂ°Ã§Â¯ÂÃ¨ÂÂÃ¥Â½ÂÃ¨ÂÂ¢Ã§ÂÂ²Ã©Â©Â´Ã¨ÂÂºÃ¥Â¿ÂÃ¨ÂÂ¦Ã¨ÂÂÃ§ÂÂ²Ã¨ÂµÂÃ¨ÂÂ§Ã¦Â°ÂÃ¨ÂÂ«Ã¨ÂÂµÃ¨ÂÂÃ¥Â½ÂÃ¨ÂÂ£ ---------- */
-
   const loadMemories = async () => {
     try {
       if (window.api) {
@@ -484,6 +471,7 @@ function Memory() {
     } catch (error) {
 
       logger.error('Failed to load stats:', error)
+      showToast('error', '加载统计失败')
 
     }
 
@@ -598,8 +586,6 @@ function Memory() {
     }
   }
 
-  /* ---------- Ã§ÂÂ«Ã©Â©Â´Ã¨ÂÂ¡Ã¥Â¿ÂÃ§Â¦ÂÃ©ÂÂ ---------- */
-
   const filteredMemories = memories.filter((m) => {
 
     if (filterType !== 'all' && m.type !== filterType) return false
@@ -614,8 +600,6 @@ function Memory() {
     <ErrorBoundary>
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, backgroundColor: COLORS.bg }}>
 
-      {/* ==================== Ã¨ÂÂÃ©ÂÂÃ©ÂÂ²Ã¨ÂÂÃ¨ÂÂÃ§Â¯ÂÃ¨ÂÂ½Ã§Â¦ÂÃ¨ÂÂ¼Ã§ÂÂ«Ã¥ÂºÂÃ©ÂÂÃ¦Â°ÂÃ¨ÂÂ¦?==================== */}
-
       <motion.div
 
         initial={{ opacity: 0, y: -12 }}
@@ -627,8 +611,6 @@ function Memory() {
         style={{ padding: '28px 32px 12px 32px' }}
 
       >
-
-        {/* é¼å´æ®çº°å²å¯é±åç¯è¹æ¬ä¼£é±Â¤å¯é¨å®ä¼?*/}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
 
@@ -828,14 +810,6 @@ style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width:
 
           </div>
 
-          {/* Ã¥Â¿ÂÃ¨ÂÂ¬Ã¨ÂÂ¹Ã¨ÂÂ½Ã©ÂºÂÃ¥ÂÂÃ¥Â¿ÂÃ¨ÂÂ¦Ã¨ÂÂ£Ã¨ÂÂÃ¨ÂÂ®Ã¥ÂºÂ */}
-
-          
-
-  
-
-          {/* Ã¨ÂÂ½Ã¥ÂÂ¤Ã§Â¦ÂÃ¦Â°ÂÃ¨ÂÂ»Ã¨ÂÂ¥Ã¨ÂÂ½Ã©Â¢ÂÃ¨ÂÂ¸Ã¨ÂÂÃ¨ÂÂÃ¨ÂÂ£Ã§ÂÂ²Ã¨ÂµÂÃ¨ÂÂ¥Ã¥Â¿ÂÃ¨ÂÂ¥?*/}
-
           <select
 
             value={filterType}
@@ -884,8 +858,6 @@ style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width:
 
       </motion.div>
 
-      {/* ==================== Ã§ÂÂ«Ã¥ÂºÂÃ¦ÂÂ³Ã¦Â°ÂÃ©Â©Â´Ã¨ÂÂ Ã¦Â°ÂÃ¨ÂÂ¢Ã¨ÂÂ´Ã§ÂÂ«Ã©ÂÂÃ§Â¯ÂÃ¨ÂÂÃ¥Â½ÂÃ¨ÂÂ¢Ã¦Â°ÂÃ¨ÂÂ«Ã¨ÂÂ¦Ã¦Â°ÂÃ¨ÂÂ¢Ã¨ÂÂ´Ã¦Â°ÂÃ¨ÂÂ§Ã©ÂÂÃ¨ÂÂ½Ã¨ÂÂ£Ã¨ÂÂ¡Ã¨ÂÂ½Ã©ÂÂÃ¨ÂÂ­Ã¥Â¿ÂÃ¨ÂÂ½Ã¥Â½ÂÃ¨ÂÂÃ¥Â½ÂÃ¨ÂÂ£ ==================== */}
-
       <div style={{ flex: 1, overflow: 'auto', padding: '0 32px 32px 32px' }}>
 
         <motion.div
@@ -929,8 +901,6 @@ style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width:
                   onClick={() => setDetailMemory(memory)}
 
                 >
-
-                  {/* Ã¨ÂÂÃ©ÂÂÃ©ÂÂ²Ã¨ÂÂÃ¨ÂÂÃ§Â¯ÂÃ¨ÂÂÃ¥Â½ÂÃ¨ÂÂ·Ã¨ÂÂ½Ã¥ÂÂ¤Ã§Â¦ÂÃ¦Â°ÂÃ¨ÂÂ»Ã¨ÂÂ¥Ã¥Â¿ÂÃ¨ÂÂ½Ã¨ÂÂ¡Ã¨ÂÂ½Ã©Â¢Â?+ Ã¥Â¿ÂÃ¨ÂÂ¯Ã¨ÂÂ§Ã§ÂÂ²Ã©ÂÂÃ¨ÂÂ¹Ã¥Â¿ÂÃ¨ÂÂ¦Ã¨ÂÂ£Ã¨ÂÂÃ¨ÂÂ®Ã¥ÂºÂ */}
 
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
 
@@ -1048,8 +1018,6 @@ e.currentTarget.style.background = COLORS.dangerDim
 
                   </p>
 
-                  {/* Ã¦Â°ÂÃ¦Â½ÂÃ¨ÂÂ²Ã¨ÂÂÃ¨ÂÂÃ§Â¯ÂÃ¨ÂÂÃ¥Â½ÂÃ¨ÂÂ·Ã¥Â¿ÂÃ¨ÂÂ½Ã¨ÂÂ¡Ã¨ÂÂ½Ã©Â¢Â?+ è¹æ¬ä¼éè¶å¯é±æ®ç°?*/}
-
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
 
                     {memory.tags.length > 0 && (
@@ -1145,30 +1113,14 @@ style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width:
             </button>
           </motion.div>
         ) : filteredMemories.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '96px 0' }}
-          >
-            <motion.div
-              animate={{ y: [0, -6, 0] }}
-              transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 64, height: 64, marginBottom: 24, background: `${HEX_COLORS.accent}10`, borderRadius: 'var(--radius-2xl)' }}
-            >
-              <Brain size={32} style={{ color: COLORS.accent, opacity: 0.4 }} />
-            </motion.div>
-            <p style={{ fontWeight: 500, color: COLORS.textSecondary }}>
-              暂无记忆
-            </p>
-            <p style={{ fontSize: 14, marginTop: 12, color: COLORS.textMuted }}>
-              开始与 AI 对话后，系统会自动记录重要信息
-            </p>
-          </motion.div>
+          <EmptyState
+            title="暂无记忆"
+            description="开始与 AI 对话后，系统会自动记录重要信息"
+            icon={<Brain size={32} style={{ color: COLORS.accent, opacity: 0.4 }} />}
+          />
         )}
 
       </div>
-
-      {/* ==================== Ã§ÂÂ«Ã§ÂÂÃ¥Â¨ÂÃ¥Â¿ÂÃ¨ÂÂÃ¨ÂÂÃ¦Â°ÂÃ¥Â½ÂÃ©Â¹Â¿Ã¨ÂÂ½Ã©ÂÂÃ¨ÂÂ´ ==================== */}
 
       <AnimatePresence>
 

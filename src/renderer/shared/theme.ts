@@ -49,6 +49,8 @@ export const HEX_COLORS = {
   accent2: '#a6a6b0',
   purple: '#8a8a96',
   violet: '#8b5cf6',
+  violetLight: '#a78bfa',
+  blue: '#3b82f6',
   bg: '#1a1a1c',
   cardBg: '#28282a',
   cardBorder: 'rgba(255,255,255,0.06)',

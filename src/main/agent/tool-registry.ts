@@ -393,5 +393,90 @@ export function registerAllTools(deps: ToolDeps = {}): void {
     })
   }
 
+  // ===== 自我改造只读工具（ReAct 侧仅开放只读，写操作走流程页人工确认） =====
+  try { registerSelfModifyReadonlyTools() } catch (e) { logger.warn('[ToolRegistry] 自我改造只读工具注册失败:', e) }
+
   logger.info(`[ToolRegistry] 工具注册完成，共 ${toolRegistry.size} 个`)
+}
+
+/**
+ * 注册自我改造的 3 个只读工具（category: 'system'）。
+ * 仅允许"列文件 / 读源码 / 预览 diff"，不开放任何写操作给 ReAct 自动循环。
+ */
+function registerSelfModifyReadonlyTools(): void {
+  toolRegistry.register({
+    name: 'self_modify_list_files',
+    description: '列出自我改造白名单目录内的源码文件清单（只读，不修改任何文件）。可选传 dir 限定子目录。',
+    category: 'system',
+    parameters: {
+      type: 'object',
+      properties: {
+        dir: { type: 'string', description: '可选，限定子目录，如 src/renderer/pages' },
+      },
+      required: [],
+    },
+    execute: async (p) => {
+      try {
+        const { selfModifyService } = await import('../self-modify/self-modify.service')
+        return { success: true, data: selfModifyService.listFiles(p.dir ? String(p.dir) : undefined) }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+  })
+
+  toolRegistry.register({
+    name: 'self_modify_read_file',
+    description: '读取白名单内单个源码文件内容（只读），返回内容与截断标记。',
+    category: 'system',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '相对仓库根的文件路径，如 src/renderer/pages/Home/index.tsx' },
+      },
+      required: ['path'],
+    },
+    execute: async (p) => {
+      try {
+        const { selfModifyService } = await import('../self-modify/self-modify.service')
+        return { success: true, data: selfModifyService.readFile(String(p.path || '')) }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+  })
+
+  toolRegistry.register({
+    name: 'self_modify_preview_diff',
+    description: '对给定变更集生成 diff 预览（只生成 diff，不写入文件），返回增删行与风险级别。',
+    category: 'system',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: '改动摘要' },
+        files: { type: 'array', description: '变更文件列表 [{path, content, mode}]' },
+      },
+      required: ['files'],
+    },
+    execute: async (p) => {
+      try {
+        const { selfModifyService } = await import('../self-modify/self-modify.service')
+        const files = Array.isArray(p.files)
+          ? (p.files as Array<{ path?: unknown; content?: unknown; mode?: unknown }>).map((f) => ({
+              path: String(f.path || ''),
+              content: String(f.content || ''),
+              mode: (f.mode === 'patch' ? 'patch' : 'overwrite') as 'patch' | 'overwrite',
+            }))
+          : []
+        const { result, error } = selfModifyService.previewDiff({
+          summary: String(p.summary || ''),
+          files,
+        })
+        if (error) return { success: false, error }
+        return { success: true, data: result }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+  })
 }

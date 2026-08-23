@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react'
 import { logger } from '../../shared/logger'
+import { showToast } from './Toast'
 
 type GpuState = 'main' | 'quality' | 'vision' | null
 
@@ -22,15 +23,13 @@ interface RouterState {
 
 function RouteStatusIndicator() {
   const [state, setState] = useState<RouterState>({ gpuType: 'main', tier: 'fast', reason: '', ts: 0 })
-  const [toast, setToast] = useState<string | null>(null)
 
   useEffect(() => {
     if (!window.api) return
     const offState = window.api.on('router:state', ((_e: unknown, s: RouterState) => setState(s)) as any)
     const offToast = window.api.on('router:toast', (((_e: unknown, t: { message: string }) => {
-      setToast(t?.message || '')
-      const timer = setTimeout(() => setToast(null), 3200)
-      return () => clearTimeout(timer)
+      // 统一转发到全局 Toast（去除本地重复实现的底部提示条）
+      if (t?.message) showToast('info', t.message)
     }) as any))
     // 拉取一次当前真实状态，避免首帧显示写死默认值
     window.api.invoke('router:get-state').then((s: any) => {
@@ -66,27 +65,6 @@ function RouteStatusIndicator() {
         <span style={{ fontSize: 11, lineHeight: 1 }}>{glyph}</span>
         <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{label}</span>
       </div>
-      {toast && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: 46,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'var(--bg-elevated, #1f2230)',
-            color: '#f5f5f7',
-            padding: '8px 14px',
-            borderRadius: 8,
-            fontSize: 12,
-            zIndex: 9999,
-            boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
-            maxWidth: '80vw',
-            textAlign: 'center',
-          }}
-        >
-          {toast}
-        </div>
-      )}
     </>
   )
 }

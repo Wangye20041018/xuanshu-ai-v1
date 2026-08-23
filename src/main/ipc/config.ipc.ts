@@ -97,6 +97,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
   'modelRegistry',
   'webSearchEnabled',
   'homeQuickActions',
+  'selfModifyWriteEnabled',
   // ===== 预留（规划中）=====
   'wakeWord', 'wakeWordEnabled', 'wakeWordSensitivity',
   'phoneSyncEnabled', 'phoneChannels',

@@ -19,6 +19,9 @@ import { HEX_COLORS, COLORS, containerVariants, itemVariants } from '../../share
 import { logger } from '../../../shared/logger'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { FocusTrap } from '../../components/a11y'
+import { showToast as showGlobalToast } from '../../components/Toast'
+import { EmptyState } from '../../components/EmptyState'
+import { LoadingSkeleton } from '../../components/LoadingSkeleton'
 import { useTranslation } from '../../i18n'
 import type { ConfigData } from '../../../shared/ipc-types'
 import {
@@ -46,12 +49,6 @@ interface PluginInfo {
     type: 'function'
     function: { name: string; description: string; parameters: Record<string, unknown> }
   }
-}
-
-interface ToastState {
-  show: boolean
-  message: string
-  type: 'success' | 'error' | 'info'
 }
 
 /* ============================================================
@@ -121,9 +118,6 @@ export default function Skills() {
   const [executingPluginId, setExecutingPluginId] = useState<string | null>(null)
   const [pluginCategoryFilter, setPluginCategoryFilter] = useState('all')
 
-  /* Toast 通知 */
-  const [toast, setToast] = useState<ToastState>({ show: false, message: '', type: 'info' })
-
   /* 插件商店模态框 */
   const [showStoreModal, setShowStoreModal] = useState(false)
 
@@ -156,10 +150,9 @@ export default function Skills() {
     load()
   }, [])
 
-  /* ========== Toast 辅助函数 ========== */
+  /* ========== Toast 辅助函数（委托到全局 Toast，保持 (message, type) 调用序兼容） ========== */
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    setToast({ show: true, message, type })
-    setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 3500)
+    showGlobalToast(type, message)
   }, [])
 
   /* ========== 加载插件池 ========== */
@@ -372,11 +365,8 @@ export default function Skills() {
 
   if (isLoading) {
     return (
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: '100%', color: COLORS.textMuted,
-      }}>
-        加载中...
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <LoadingSkeleton variant="list" lines={6} loadingText="加载专家团" />
       </div>
     )
   }
@@ -396,29 +386,6 @@ export default function Skills() {
         position: 'relative',
       }}
     >
-      {/* ==================== Toast 通知 ==================== */}
-      <AnimatePresence>
-        {toast.show && (
-          <motion.div
-            initial={{ opacity: 0, y: -20, x: '-50%' }}
-            animate={{ opacity: 1, y: 0, x: '-50%' }}
-            exit={{ opacity: 0, y: -20, x: '-50%' }}
-            style={{
-              position: 'absolute', top: 16, left: '50%', zIndex: 100,
-              padding: '10px 20px', borderRadius: 12, fontSize: 13, fontWeight: 500,
-              color: '#fff',
-              background: toast.type === 'success'
-                ? COLORS.success
-                : toast.type === 'error' ? '#ef4444' : COLORS.accent,
-              boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
-              whiteSpace: 'nowrap', pointerEvents: 'none',
-            }}
-          >
-            {toast.message}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* ==================== 页面标题栏 ==================== */}
       <motion.div
         variants={itemVariants}
@@ -843,12 +810,10 @@ export default function Skills() {
 
             {/* 空状态 */}
             {!pluginsLoading && !pluginsError && filteredPlugins.length === 0 && (
-              <div style={{
-                textAlign: 'center', padding: 40,
-                color: COLORS.textMuted, fontSize: 13,
-              }}>
-                {pluginCategoryFilter === 'all' ? '暂无已安装的插件' : '该分类下暂无插件'}
-              </div>
+              <EmptyState
+                title={pluginCategoryFilter === 'all' ? '暂无已安装的插件' : '该分类下暂无插件'}
+                description="可通过「从本地安装」按钮添加自定义插件"
+              />
             )}
 
             {/* 插件卡片网格 */}
@@ -918,6 +883,7 @@ export default function Skills() {
                         whileHover={{ scale: 1.08, color: '#ef4444' }}
                         whileTap={{ scale: 0.9 }}
                         onClick={() => unregisterPoolPlugin(plugin.id)}
+                        aria-label={`卸载插件: ${plugin.name}`}
                         style={{
                           display: 'flex', alignItems: 'center', gap: 4,
                           padding: '4px 10px', borderRadius: 8,

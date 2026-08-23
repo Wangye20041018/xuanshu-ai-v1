@@ -4,6 +4,8 @@ declare global {
   interface Window {
     api: {
       invoke: <T = unknown>(channel: import('./index').IpcChannels, ...args: unknown[]) => Promise<T>
+      invokeWithTimeout: <T = unknown>(channel: import('./index').IpcChannels, timeoutMs: number, ...args: unknown[]) => Promise<T>
+      invokeSafe: <T = unknown>(channel: import('./index').IpcChannels, ...args: unknown[]) => Promise<{ ok: boolean; data?: T; error?: string }>
       send: (channel: import('./index').IpcChannels, ...args: unknown[]) => void
       on: (channel: import('./index').IpcChannels, callback: (event: import('electron').IpcRendererEvent, ...args: unknown[]) => void) => () => void
       once: (channel: import('./index').IpcChannels, callback: (...args: unknown[]) => void) => void

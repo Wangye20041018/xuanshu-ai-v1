@@ -76,6 +76,7 @@ import { setupSkillPackHandlers, loadLearnedSkillPacks } from '../skill-pack'
 import { setupPptFlowHandlers } from '../ppt-flow'
 import { setupEmotionHandlers } from '../persona/emotion-engine'
 import { setupBackupHandlers } from '../backup'
+import { setupSelfModifyHandlers } from '../self-modify/self-modify.ipc'
 import { validateSender, validateSenderEvent } from '../utils/ipc-guard'
 
 /* ==================== 协议注册 ==================== */
@@ -230,6 +231,7 @@ export function setupAllIpcHandlers(options: {
     ['CloudQuota', setupCloudQuotaHandlers],
     ['LocalAiScanner', setupLocalAiHandlers],
     ['Backup', setupBackupHandlers],
+    ['SelfModify', setupSelfModifyHandlers],
   ]
 
   for (const [name, setup] of handlerSetups) {

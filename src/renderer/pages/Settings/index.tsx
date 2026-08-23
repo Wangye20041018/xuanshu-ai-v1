@@ -1027,6 +1027,27 @@ function Settings() {
     if (window.api) window.api.invoke('voiceprint:noise-level', level).catch((e) => { logger.error('[Settings] 降噪等级同步失败:', e) })
   }
 
+  /* ---------- 设置分组导航（左侧锚点） ---------- */
+  const [activeGroup, setActiveGroup] = useState('general')
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({})
+  const SETTING_GROUPS: Array<{ id: string; label: string }> = [
+    { id: 'general', label: '常规设置' },
+    { id: 'floating-ball', label: '悬浮球' },
+    { id: 'context', label: '情境感知' },
+    { id: 'quick-actions', label: '首页预指令' },
+    { id: 'voice-wake', label: '语音唤醒' },
+    { id: 'permissions', label: '权限管理' },
+    { id: 'voiceprint', label: '声纹与降噪' },
+    { id: 'skill-packs', label: '技能包' },
+    { id: 'search', label: '搜索设置' },
+    { id: 'health', label: '体检' },
+    { id: 'about', label: '关于' },
+  ]
+  const scrollToSection = (id: string) => {
+    setActiveGroup(id)
+    sectionRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return (
     <motion.div
       style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, backgroundColor: COLORS.bg, color: COLORS.textPrimary }}
@@ -1081,16 +1102,47 @@ function Settings() {
 
       {/* ==================== 设置内容 ==================== */}
       <ErrorBoundary>
-      <div
-        className="flex-1 overflow-auto"
-        style={{
-          padding: '28px 32px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 24,
-        }}
-      >
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+        {/* 左侧分组导航 */}
+        <aside style={{
+          width: 168, flexShrink: 0, overflowY: 'auto', padding: '16px 12px',
+          borderRight: `1px solid ${COLORS.cardBorder}`, background: COLORS.bg,
+        }}>
+          <nav aria-label="设置分组导航" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {SETTING_GROUPS.map((g) => {
+              const isActive = activeGroup === g.id
+              return (
+                <button
+                  key={g.id}
+                  onClick={() => scrollToSection(g.id)}
+                  style={{
+                    textAlign: 'left', padding: '8px 12px', borderRadius: 8,
+                    border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13,
+                    background: isActive ? `${HEX_COLORS.accent}14` : 'transparent',
+                    color: isActive ? COLORS.accent : COLORS.textSecondary,
+                    fontWeight: isActive ? 600 : 400,
+                    transition: 'all 150ms',
+                  }}
+                >
+                  {g.label}
+                </button>
+              )
+            })}
+          </nav>
+        </aside>
+
+        {/* 设置内容滚动区 */}
+        <div
+          className="flex-1 overflow-auto"
+          style={{
+            padding: '28px 32px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 24,
+          }}
+        >
         {/* ~~~~~~~~~~~ 粒子球设置卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['floating-ball'] = el }} style={{ scrollMarginTop: 16 }}>
         <GlassCard
           title="悬浮球"
           icon={<Circle size={18} />}
@@ -1105,14 +1157,20 @@ function Settings() {
             </div>
           </div>
         </GlassCard>
+        </section>
 
         {/* ~~~~~~~~~~~ 情境感知 · 第六感 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['context'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsContext />
+        </section>
 
         {/* ~~~~~~~~~~~ 首页预指令配置 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['quick-actions'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsQuickActions />
+        </section>
 
         {/* ~~~~~~~~~~~ 语音唤醒卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['voice-wake'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsVoiceWake
           wakeEnabled={wakeEnabled}
           wakeRunning={wakeRunning}
@@ -1130,8 +1188,10 @@ function Settings() {
           onExitCancelWordsChange={handleExitCancelWordsChange}
           onExitConfirmTTSChange={handleExitConfirmTTSChange}
         />
+        </section>
 
         {/* ~~~~~~~~~~~ 权限管理卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['permissions'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsPermissions
           permissionStatus={permissionStatus}
           isLoading={isLoading}
@@ -1145,9 +1205,11 @@ function Settings() {
           onRefreshAdmin={handleRefreshAdminRegistry}
           onRestartAdmin={handleRestartAdmin}
         />
+        </section>
 
 
         {/* ~~~~~~~~~~~ 常规设置卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['general'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsGeneral
           autoUpdate={autoUpdate}
           sendStats={sendStats}
@@ -1158,8 +1220,10 @@ function Settings() {
           onAutoStartChange={handleAutoStartChange}
           onThemeColorChange={handleThemeColorChange}
         />
+        </section>
 
         {/* ~~~~~~~~~~~ 声纹与降噪 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['voiceprint'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsVoiceprint
           voiceprintSampleCount={voiceprintSampleCount}
           voiceprintSamples={voiceprintSamples}
@@ -1175,11 +1239,15 @@ function Settings() {
           onNoiseFilterChange={toggleNoiseFilter}
           onNoiseLevelChange={handleNoiseLevelChange}
         />
+        </section>
 
         {/* ~~~~~~~~~~~ 技能包管理卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['skill-packs'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsSkillPacks />
+        </section>
 
         {/* ~~~~~~~~~~~ 搜索设置卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['search'] = el }} style={{ scrollMarginTop: 16 }}>
         <GlassCard
           title="搜索设置"
           icon={<Search size={18} />}
@@ -1187,8 +1255,10 @@ function Settings() {
         >
           <WebSearchPanel />
         </GlassCard>
+        </section>
 
         {/* ~~~~~~~~~~~ 体检卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['health'] = el }} style={{ scrollMarginTop: 16 }}>
         <GlassCard
           title="体检"
           icon={<Activity size={18} />}
@@ -1269,8 +1339,10 @@ function Settings() {
             </div>
           </div>
         </GlassCard>
+        </section>
 
         {/* ~~~~~~~~~~~ 关于信息卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['about'] = el }} style={{ scrollMarginTop: 16 }}>
         <GlassCard
           title="关于"
           icon={<Info size={18} />}
@@ -1352,6 +1424,8 @@ boxShadow: `0 4px 16px ${HEX_COLORS.violet}40`,
             ))}
           </div>
         </GlassCard>
+        </section>
+      </div>
       </div>
       </ErrorBoundary>
       {fixOpen && (

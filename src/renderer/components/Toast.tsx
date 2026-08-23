@@ -18,6 +18,17 @@ export function showToast(type: ToastType, message: string) {
   listeners.forEach(listener => listener(type, message))
 }
 
+// 监听 preload `invokeSafe` 派发的 IPC 失败事件，统一转为全局 toast，
+// 避免各列表页 IPC 失败静默、用户无感知。
+if (typeof window !== 'undefined') {
+  window.addEventListener('xuanshu:ipc-error', ((e: Event) => {
+    const detail = (e as CustomEvent).detail as { channel?: string; message?: string } | undefined
+    if (detail?.message) {
+      showToast('error', detail.channel ? `[${detail.channel}] ${detail.message}` : detail.message)
+    }
+  }) as EventListener)
+}
+
 export function ToastContainer() {
   const [toasts, setToasts] = useState<Toast[]>([])
 
