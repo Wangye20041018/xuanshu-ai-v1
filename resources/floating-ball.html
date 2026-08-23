@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>玄枢 · 悬浮球</title>
+<style>
+:root {
+  --primary: #6366f1;
+  --window-size: 190px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: var(--window-size); height: var(--window-size);
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+body { display: flex; align-items: center; justify-content: center; }
+.ball-wrap {
+  display: flex; align-items: center; justify-content: center;
+  -webkit-app-region: no-drag;
+  cursor: pointer;
+}
+canvas { display: block; border-radius: 50%; }
+</style>
+</head>
+<body>
+<div class="ball-wrap" id="wrap"><canvas id="c"></canvas></div>
+<!-- 右键快捷菜单 -->
+<div id="ctxmenu" style="display:none;position:fixed;top:0;left:0;z-index:99;min-width:120px;background:rgba(24,26,36,0.96);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:6px;box-shadow:0 8px 30px rgba(0,0,0,0.45);font-family:'Segoe UI','Microsoft YaHei',sans-serif;font-size:13px;color:#e4e6ed;-webkit-app-region:no-drag;">
+  <div class="ctx-item" data-act="open-main">打开主窗口</div>
+  <div class="ctx-item" data-act="panel">快捷面板</div>
+  <div style="height:1px;background:rgba(255,255,255,0.08);margin:5px 0"></div>
+  <div class="ctx-item" data-act="hide" style="color:#f87171">隐藏悬浮球</div>
+</div>
+<style>
+.ctx-item{padding:8px 14px;border-radius:8px;cursor:pointer;transition:background 0.15s}
+.ctx-item:hover{background:rgba(255,255,255,0.09)}
+.ctx-item:active{background:rgba(255,255,255,0.14)}
+</style>
+
+<script>
+/* ============================================================
+   玄枢悬浮球 v6.0 — 自包含 Canvas2D 三维 Fibonacci 粒子球
+   - 离线可用（无 CDN 依赖）
+   - 斐波那契球面均匀分布 ~800 粒子，透视投影 + 加色发光
+   - 四态动画：idle / listening / speaking / thinking
+   - 支持情绪着色（setFloatingBallEmotion）
+   主色 #6366f1（玄枢紫蓝）
+   ============================================================ */
+(function () {
+  'use strict'
+  const canvas = document.getElementById('c')
+  const ctx = canvas.getContext('2d')
+
+  // 球体尺寸：取窗口较小边的 78%，其余留白给发光
+  const ballSize = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.78)
+  canvas.style.width = ballSize + 'px'
+  canvas.style.height = ballSize + 'px'
+  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  canvas.width = ballSize * dpr
+  canvas.height = ballSize * dpr
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+  // ---- 斐波那契球面粒子 ----
+  const N = 800
+  const pts = []
+  const phi = Math.PI * (3 - Math.sqrt(5))
+  for (let i = 0; i < N; i++) {
+    const y = 1 - (i / (N - 1)) * 2
+    const r = Math.sqrt(1 - y * y)
+    const t = phi * i
+    pts.push({
+      x: Math.cos(t) * r,
+      y: y,
+      z: Math.sin(t) * r,
+      size: 0.5 + Math.random() * 1.0,
+      phase: Math.random() * Math.PI * 2,
+    })
+  }
+
+  // ---- 状态 ----
+  let state = 'idle'
+  let emotionHex = null
+  let rotY = 0
+  const rotX = 0.28
+  let amp = 0.045
+  let time = 0
+
+  const BASE = [99, 102, 241] // #6366f1
+  function hexToRgb(hex) {
+    try {
+      const c = String(hex || '').replace('#', '')
+      return [parseInt(c.substring(0, 2), 16), parseInt(c.substring(2, 4), 16), parseInt(c.substring(4, 6), 16)]
+    } catch (e) { return BASE }
+  }
+  function currentRgb() {
+    if (emotionHex) return hexToRgb(emotionHex)
+    if (state === 'listening') return [239, 68, 68]   // 红
+    if (state === 'speaking') return [96, 165, 250]   // 蓝
+    if (state === 'thinking') return [245, 158, 11]   // 橙
+    return BASE
+  }
+
+  function applyState(s) {
+    if (['idle', 'listening', 'speaking', 'thinking'].includes(s)) state = s
+  }
+  function applyEmotion(hex) { emotionHex = hex || null }
+
+  // 暴露给主进程 executeJavaScript 调用
+  window.setFloatingBallState = applyState
+  window.setFloatingBallEmotion = applyEmotion
+  window.setState = applyState
+  window.setEmotion = applyEmotion
+
+  // ---- 渲染 ----
+  const cx = ballSize / 2
+  const cy = ballSize / 2
+  const R = cx - 2
+
+  function draw() {
+    requestAnimationFrame(draw)
+    time += 0.016
+
+    // 状态驱动振幅（呼吸/脉冲）
+    if (state === 'listening') {
+      amp += ((0.30 + Math.sin(time * 5) * 0.08) - amp) * 0.2
+    } else if (state === 'speaking') {
+      amp += ((0.16 + Math.sin(time * 3.5) * 0.06) - amp) * 0.2
+    } else if (state === 'thinking') {
+      amp += ((0.10 + Math.sin(time * 2) * 0.04) - amp) * 0.2
+    } else {
+      amp += ((0.05 + Math.sin(time * 1.2) * 0.015) - amp) * 0.1
+    }
+
+    // 旋转
+    if (state === 'thinking') rotY += 0.022
+    else if (state === 'listening') rotY += 0.006
+    else rotY += 0.010
+
+    ctx.clearRect(0, 0, ballSize, ballSize)
+    const rgb = currentRgb()
+    const cr = rgb[0], cg = rgb[1], cb = rgb[2]
+
+    const cosY = Math.cos(rotY), sinY = Math.sin(rotY)
+    const cosX = Math.cos(rotX), sinX = Math.sin(rotX)
+
+    ctx.globalCompositeOperation = 'lighter'
+    for (let i = 0; i < N; i++) {
+      const p = pts[i]
+      // 绕 Y
+      const x1 = p.x * cosY + p.z * sinY
+      const z1 = -p.x * sinY + p.z * cosY
+      // 绕 X
+      const y1 = p.y * cosX - z1 * sinX
+      const z2 = p.y * sinX + z1 * cosX
+
+      const persp = 3.0 / (3.1 + z2)
+      const sx = cx + x1 * R * persp
+      const sy = cy + y1 * R * persp
+      const depth = (z2 + 1) / 2 // 0 后 1 前
+      const tw = 0.55 + 0.45 * Math.sin(p.phase + time * 2.0)
+      const alpha = (0.16 + depth * 0.75) * tw * (0.5 + amp * 0.7)
+      const size = (0.6 + p.size * 0.9) * persp * (0.8 + amp * 0.4)
+
+      ctx.fillStyle = 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (alpha > 1 ? 1 : alpha).toFixed(3) + ')'
+      ctx.beginPath()
+      ctx.arc(sx, sy, Math.max(0.35, size), 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.globalCompositeOperation = 'source-over'
+  }
+
+  // ---- 交互 ----
+  let clickTimer = null
+  canvas.addEventListener('click', function () {
+    if (clickTimer) {
+      clearTimeout(clickTimer)
+      clickTimer = null
+      try { window.api.invoke('floating-ball:show-panel') } catch (e) {}
+    } else {
+      clickTimer = setTimeout(function () {
+        clickTimer = null
+        try { window.api.invoke('floating-ball:open-main') } catch (e) {}
+      }, 260)
+    }
+  })
+
+  // ---- 右键菜单 ----
+  const ctxMenu = document.getElementById('ctxmenu')
+  function hideCtxMenu() { if (ctxMenu) ctxMenu.style.display = 'none' }
+  canvas.addEventListener('contextmenu', function (e) {
+    e.preventDefault()
+    if (!ctxMenu) { try { window.api.invoke('floating-ball:show-panel') } catch (err) {}; return }
+    const x = Math.min(e.clientX, window.innerWidth - 130)
+    const y = Math.min(e.clientY, window.innerHeight - 120)
+    ctxMenu.style.left = x + 'px'
+    ctxMenu.style.top = y + 'px'
+    ctxMenu.style.display = 'block'
+  })
+  ctxMenu.addEventListener('click', function (e) {
+    const item = e.target.closest('.ctx-item')
+    if (!item) return
+    const act = item.getAttribute('data-act')
+    hideCtxMenu()
+    if (act === 'open-main') { try { window.api.invoke('floating-ball:open-main') } catch (err) {} }
+    else if (act === 'panel') { try { window.api.invoke('floating-ball:show-panel') } catch (err) {} }
+    else if (act === 'hide') { try { window.api.invoke('floating-ball:hide') } catch (err) {} }
+  })
+  document.addEventListener('click', function (e) {
+    if (ctxMenu && !ctxMenu.contains(e.target)) hideCtxMenu()
+  })
+
+  // ---- 贴边吸附：拖动结束检测 + 悬停恢复 ----
+  let lastUnhide = 0
+  document.addEventListener('mouseup', function () {
+    // 拖动结束（-webkit-app-region:drag 场景），检测是否贴边
+    try { window.api.invoke('floating-ball:snap-check') } catch (e) {}
+  })
+  document.addEventListener('mousemove', function () {
+    // 半隐藏状态下鼠标移入即恢复（节流 200ms）
+    const now = Date.now()
+    if (now - lastUnhide < 200) return
+    lastUnhide = now
+    try { window.api.invoke('floating-ball:unhide') } catch (e) {}
+  })
+
+  // ---- 监听主进程 IPC ----
+  if (window.api && window.api.on) {
+    window.api.on('floating-ball:set-state', function (_e, s) { applyState(s) })
+    window.api.on('floating-ball:set-emotion', function (_e, hex) { applyEmotion(hex) })
+  }
+
+  draw()
+})()
+</script>
+</body>
+</html>

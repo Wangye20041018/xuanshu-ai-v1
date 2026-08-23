@@ -1,0 +1,93 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+__app_pkg__/
+src/renderer/out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment
+.env
+.env.local
+.env.production
+.env.cloud
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Test coverage
+coverage/
+
+# Electron
+dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+engine/*.egg-info/
+
+# Package lock
+pnpm-lock.yaml
+yarn.lock
+
+# ============ 敏感凭据（严禁入库）============
+# 代码签名私钥：一旦泄露可被仿冒签名，属于最高风险凭据
+resources/cert/*.pfx
+resources/cert/*.p12
+*.pfx
+*.p12
+
+# ============ 大文件（本地模型 / 打包产物，不入库）============
+# GGUF 模型权重（数 GB，需用户自行下载/放置）
+resources/models/*.gguf
+*.gguf
+# 运行时二进制资源（模型/运行时/字体/音色，体积大且非源码，不入库）
+resources/models/
+resources/python/
+resources/voice-models/
+resources/piper/
+resources/sglang/
+resources/vc_redist/
+resources/vc_dll/
+resources/cuda_dll/
+resources/fonts/
+# 打包/验证/输出产物目录
+__app_pkg_verify__/
+output/
+.trash_staging/
+# 备份导出产物（用户本地生成，不入库）
+*.zip.backup
+
+# ============ 运行时二进制（llama.cpp / FFmpeg / CUDA，需自行放置）============
+resources/*.dll
+resources/*.exe
+resources/*.lib
+resources/*.bin
+# 构建日志
+build_log*.txt
+
+# ============ 其他运行时产物 ============
+nul
+fetch_scan.txt
+test-log.md
