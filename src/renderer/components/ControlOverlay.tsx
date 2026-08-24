@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 interface ControlStatePayload {
   active: boolean
   detail?: string
+  phase?: 'thinking' | 'acting' | 'done'
   ts?: number
 }
 
@@ -27,6 +28,21 @@ const SEVERITY_LABEL: Record<Severity, string> = {
   normal: '正在控制',
 }
 
+/** 发光特效预设色（对应 config controlGlowColor） */
+const GLOW_PRESETS: Record<string, string> = {
+  blueviolet: '#6d5bff',
+  cyan: '#22d3ee',
+  amber: '#f59e0b',
+  red: '#ef4444',
+}
+
+/** 三态文案 */
+const PHASE_LABEL: Record<string, string> = {
+  thinking: '思考中',
+  acting: '操作中',
+  done: '已完成',
+}
+
 /** 依据操作文案判定风险等级（主进程 detail 由受控标签拼接，无用户/LLM 自由文本） */
 function classifySeverity(detail: string): Severity {
   const d = detail || ''
@@ -40,44 +56,72 @@ function classifySeverity(detail: string): Severity {
 }
 
 /**
- * ControlOverlay — 「控制电脑」全屏特效（产品级）
+ * ControlOverlay — 「控制电脑」全屏发光特效（智能体操作系统版）
  *
- * 当主进程广播 control:state（玄枢正在移动鼠标/键盘输入/注册表写入/
- * 服务启停/进程结束等）时，在应用窗口上叠加一层可视化的"控制中"特效，
- * 让用户始终清楚 AI 此刻正在操作自己的电脑。
- *
- * 特性：
- * - 危险分级配色（高风险=红 / 输入模拟=琥珀 / 普通=品牌蓝紫）
- * - 顶部 HUD 状态条 + 操作计数与耗时
- * - 底部滚动操作历史 ticker
- * - 鼠标"注视"光晕（随指针移动，示意 AI 关注点）
- * - 指针穿透（pointer-events:none），不阻断用户操作
+ * 在 control:state 广播时叠加全屏特效：
+ *  - 屏幕四周发光（8~12px 蓝紫渐变边框）+ 三态动效（thinking/acting/done）
+ *  - 危险分级配色 + 顶部 HUD + 操作历史 ticker
+ *  - 可配置：开关 / 亮度 / 颜色 / 动效强度（electron-store 4 个 config key）
+ *  - 紧急暂停：监听 control:panic 进入「已暂停」态
+ *  - 指针穿透（pointer-events:none），不阻断用户操作
  */
 export default function ControlOverlay() {
   const [active, setActive] = useState(false)
   const [detail, setDetail] = useState('')
+  const [phase, setPhase] = useState<'thinking' | 'acting' | 'done'>('acting')
+  const [paused, setPaused] = useState(false)
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [startTs, setStartTs] = useState(0)
   const [elapsed, setElapsed] = useState(0)
-  // 超过 12 秒未收到 finish 时兜底隐藏 overlay
+
+  // 发光特效配置（默认开启）
+  const [glowConfig, setGlowConfig] = useState({
+    enabled: true,
+    brightness: 0.8,
+    color: 'blueviolet',
+    intensity: 0.7,
+  })
+
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const glowRef = useRef<HTMLDivElement | null>(null)
 
   const severity = useMemo(() => classifySeverity(detail), [detail])
   const accent = SEVERITY_COLOR[severity]
+  const glowColor = GLOW_PRESETS[glowConfig.color] || GLOW_PRESETS.blueviolet
+
+  // 读取发光配置
+  useEffect(() => {
+    const api = (window as any).api
+    if (!api?.invoke) return
+    const load = async () => {
+      try {
+        const cfg = await api.invoke('config:get')
+        if (cfg) {
+          setGlowConfig({
+            enabled: cfg.controlGlowEnabled !== false,
+            brightness: clampNum(cfg.controlGlowBrightness, 0.8),
+            color: cfg.controlGlowColor || 'blueviolet',
+            intensity: clampNum(cfg.controlGlowIntensity, 0.7),
+          })
+        }
+      } catch {
+        /* 浏览器调试环境，忽略 */
+      }
+    }
+    void load()
+  }, [])
 
   useEffect(() => {
     const api = (window as any).api
-    if (!api?.on) {
-      // 无 preload 环境（如纯浏览器调试），忽略
-      return
-    }
+    if (!api?.on) return
 
     const unsubscribe = api.on('control:state', (_event: unknown, payload: ControlStatePayload) => {
       if (payload?.active) {
         const d = payload.detail || '正在控制电脑'
         setActive(true)
+        setPaused(false)
         setDetail(d)
+        setPhase(payload.phase || 'acting')
         setStartTs(payload.ts || Date.now())
         setElapsed(0)
         setHistory((prev) => {
@@ -85,29 +129,38 @@ export default function ControlOverlay() {
           return next.slice(0, 6)
         })
         if (hideTimer.current) clearTimeout(hideTimer.current)
-        // 兜底：若异常导致 finish 未送达，12 秒后强制隐藏 overlay
         hideTimer.current = setTimeout(() => setActive(false), 12_000)
       } else {
         if (hideTimer.current) clearTimeout(hideTimer.current)
-        setActive(false)
+        setPhase('done')
+        // done 态短暂停留后隐藏
+        setTimeout(() => setActive(false), 700)
         setElapsed(0)
       }
     })
 
+    const unsubPanic = api.on('control:panic', () => {
+      setPaused(true)
+      setActive(true)
+      setPhase('done')
+      if (hideTimer.current) clearTimeout(hideTimer.current)
+    })
+
     return () => {
       if (unsubscribe) unsubscribe()
+      if (unsubPanic) unsubPanic()
       if (hideTimer.current) clearTimeout(hideTimer.current)
     }
   }, [])
 
   // 操作耗时计时器
   useEffect(() => {
-    if (!active) return
+    if (!active || paused) return
     const timer = setInterval(() => setElapsed(Math.floor((Date.now() - startTs) / 1000)), 250)
     return () => clearInterval(timer)
-  }, [active, startTs])
+  }, [active, paused, startTs])
 
-  // 鼠标"注视"光晕：监听窗口级 mousemove，直接改写 DOM style（不触发 React 重渲染）
+  // 鼠标「注视」光晕
   useEffect(() => {
     if (!active) return
     const onMove = (e: MouseEvent) => {
@@ -120,10 +173,12 @@ export default function ControlOverlay() {
     return () => window.removeEventListener('mousemove', onMove)
   }, [active])
 
-  if (!active) return null
+  if (!active || !glowConfig.enabled) return null
 
   const danger = severity === 'danger'
   const warning = severity === 'warning'
+  const intensity = glowConfig.intensity
+  const brightness = glowConfig.brightness
 
   return (
     <>
@@ -135,17 +190,27 @@ export default function ControlOverlay() {
           0%, 100% { box-shadow: 0 0 12px var(--xc-accent), 0 0 40px var(--xc-accent)66; }
           50% { box-shadow: 0 0 24px var(--xc-accent), 0 0 60px var(--xc-accent)aa; }
         }
-        @keyframes xsc-borderflow {
-          0% { background-position: 0% 50%; }
-          50% { background-position: 100% 50%; }
-          100% { background-position: 0% 50%; }
-        }
         @keyframes xsc-ticker-in {
           from { opacity: 0; transform: translateY(-8px); }
           to { opacity: 1; transform: translateY(0); }
         }
+        /* 三态边框动效：thinking 呼吸蓝 / acting 高频流动紫 / done 渐隐收束 */
+        @keyframes xsc-border-breathe {
+          0%, 100% { opacity: ${0.4 * intensity}; filter: blur(0px); }
+          50% { opacity: ${0.9 * intensity}; filter: blur(2px); }
+        }
+        @keyframes xsc-border-flow {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        @keyframes xsc-border-fade {
+          0% { opacity: ${0.9 * intensity}; }
+          100% { opacity: 0; }
+        }
         .xsc-overlay {
           --xc-accent: ${accent};
+          --xc-glow: ${glowColor};
           position: fixed;
           inset: 0;
           z-index: 99990;
@@ -154,6 +219,30 @@ export default function ControlOverlay() {
           background:
             radial-gradient(ellipse at center, transparent 45%, ${danger ? 'rgba(40, 6, 10, 0.5)' : warning ? 'rgba(30, 20, 4, 0.44)' : 'rgba(6, 10, 24, 0.42)'} 100%);
         }
+        /* 屏幕四周发光边框 */
+        .xsc-border {
+          position: absolute;
+          inset: 0;
+          z-index: 1;
+          pointer-events: none;
+        }
+        .xsc-border::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: 0;
+          padding: ${8 + Math.round(intensity * 4)}px;
+          background: linear-gradient(120deg, ${glowColor}, ${accent}, ${glowColor});
+          background-size: 300% 300%;
+          -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+          -webkit-mask-composite: xor;
+          mask-composite: exclude;
+          opacity: ${brightness};
+          animation: xsc-border-flow 3s ease infinite, xsc-border-breathe 1.6s ease-in-out infinite;
+        }
+        .xsc-border.thinking::before { animation: xsc-border-breathe 2.4s ease-in-out infinite; }
+        .xsc-border.acting::before { animation: xsc-border-flow 1.6s linear infinite, xsc-border-breathe 0.8s ease-in-out infinite; }
+        .xsc-border.done::before { animation: xsc-border-fade 0.7s ease forwards; }
         .xsc-grid {
           position: absolute; inset: 0;
           background-image:
@@ -177,7 +266,6 @@ export default function ControlOverlay() {
         .xsc-corner.bl { bottom: 22px; left: 22px; border-right: none; border-top: none; border-bottom-left-radius: 10px; }
         .xsc-corner.br { bottom: 22px; right: 22px; border-left: none; border-top: none; border-bottom-right-radius: 10px; }
 
-        /* 顶部 HUD 状态条 */
         .xsc-hud {
           position: absolute; top: 22px; left: 50%; transform: translateX(-50%);
           display: flex; align-items: center; gap: 16px;
@@ -194,7 +282,6 @@ export default function ControlOverlay() {
         .xsc-hud .sep { opacity: 0.35; }
         .xsc-hud .metric { color: var(--xc-accent); font-weight: 700; }
 
-        /* 中央状态 */
         .xsc-status {
           position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
           display: flex; flex-direction: column; align-items: center; gap: 14px;
@@ -219,8 +306,8 @@ export default function ControlOverlay() {
         }
         .xsc-badge.danger { background: rgba(40, 6, 10, 0.6); font-weight: 700; }
         .xsc-badge.warning { background: rgba(30, 20, 4, 0.6); }
+        .xsc-badge.paused { color: #fbbf24; border-color: #fbbf2455; animation: none; }
 
-        /* 雷达 */
         .xsc-radar {
           position: absolute; top: 50%; left: 50%; width: 340px; height: 340px;
           margin: -170px 0 0 -170px; border-radius: 50%;
@@ -236,7 +323,6 @@ export default function ControlOverlay() {
           animation: xsc-sweep 3.2s linear infinite;
         }
 
-        /* 鼠标注视光晕 */
         .xsc-glow-cursor {
           position: absolute; top: 0; left: 0; width: 280px; height: 280px;
           border-radius: 50%; opacity: 0;
@@ -245,7 +331,6 @@ export default function ControlOverlay() {
           will-change: transform;
         }
 
-        /* 底部操作历史 ticker */
         .xsc-ticker {
           position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
           display: flex; flex-direction: column; gap: 4px; align-items: center;
@@ -266,6 +351,7 @@ export default function ControlOverlay() {
       `}</style>
 
       <div className="xsc-overlay" role="status" aria-live="assertive" aria-label="AI 正在控制电脑">
+        <div className={`xsc-border ${phase}`} />
         <div className="xsc-grid" />
         <div className="xsc-scanline" />
         <div className="xsc-glow-cursor" ref={glowRef} />
@@ -275,31 +361,31 @@ export default function ControlOverlay() {
         <div className="xsc-corner br" />
         <div className="xsc-radar" />
 
-        {/* 顶部 HUD */}
         <div className="xsc-hud">
           <span className="dot" />
           <span>SYSTEM CONTROL</span>
           <span className="sep">|</span>
+          <span>PHASE</span>
+          <span className="metric">{PHASE_LABEL[phase]?.toUpperCase() || phase.toUpperCase()}</span>
+          <span className="sep">|</span>
           <span>STATUS</span>
-          <span className="metric">{severity.toUpperCase()}</span>
+          <span className="metric">{paused ? 'PAUSED' : severity.toUpperCase()}</span>
           <span className="sep">|</span>
           <span>T+{elapsed}s</span>
           <span className="sep">|</span>
           <span>OPS {history.length}</span>
         </div>
 
-        {/* 中央状态 */}
         <div className="xsc-status">
           <span className="xsc-dot" />
-          <span className="xsc-title">玄枢正在控制电脑</span>
-          <span className="xsc-detail">{detail}</span>
-          <span className={`xsc-badge ${severity}`}>
+          <span className="xsc-title">{paused ? '已紧急暂停' : '玄枢正在控制电脑'}</span>
+          <span className="xsc-detail">{paused ? '所有控制操作已中断' : detail}</span>
+          <span className={`xsc-badge ${paused ? 'paused' : severity}`}>
             <span className="xsc-dot" style={{ width: 6, height: 6 }} />
-            {SEVERITY_LABEL[severity]}
+            {paused ? '已暂停' : SEVERITY_LABEL[severity]}
           </span>
         </div>
 
-        {/* 底部操作历史 */}
         <div className="xsc-ticker">
           <span className="xsc-ticker-label">RECENT ACTIONS</span>
           {history.slice(0, 3).map((h, i) => (
@@ -315,4 +401,11 @@ export default function ControlOverlay() {
       </div>
     </>
   )
+}
+
+/** 数值夹取到 0.2~1.0（发光亮度/强度合法区间） */
+function clampNum(v: unknown, fallback: number): number {
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(1, Math.max(0.2, n))
 }

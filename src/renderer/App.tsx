@@ -25,6 +25,7 @@ const Plugins = lazy(() => import('./pages/Plugins'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Automation = lazy(() => import('./pages/Automation'))
 const SelfModify = lazy(() => import('./pages/SelfModify'))
+const Agents = lazy(() => import('./pages/Agents'))
 
 /** 模块状态快照 */
 interface ModuleStatus {
@@ -388,6 +389,7 @@ function App() {
                       <Route path="/settings" element={<Settings />} />
                       <Route path="/automation" element={<Automation />} />
                       <Route path="/self-modify" element={<SelfModify />} />
+                      <Route path="/agents" element={<Agents />} />
                     </Routes>
                   </Suspense>
                 </motion.div>

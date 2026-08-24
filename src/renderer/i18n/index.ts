@@ -45,6 +45,8 @@ const zh_CN: TranslationTable = {
     plugins: '智囊团',
     automation: '自动化',
     selfModify: '自我改造',
+    agents: '智能体',
+    browser: '浏览器',
     settings: '设置',
     section: {
       features: '功能',
@@ -230,6 +232,8 @@ const en_US: TranslationTable = {
     plugins: 'Plugins',
     automation: 'Automation',
     selfModify: 'Self-Modify',
+    agents: 'Agents',
+    browser: 'Browser',
     settings: 'Settings',
     section: {
       features: 'Features',
