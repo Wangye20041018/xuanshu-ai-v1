@@ -6,11 +6,15 @@
 import { ipcMain } from 'electron'
 import { logger } from '../../shared/logger'
 import { agentStore } from './agent-store'
-import type { AgentDefinition } from '../../shared/agent-types'
+import { runAgent, stopAgent } from './agent-runtime'
+import { toolRegistry } from './tool-registry'
+import type { AgentDefinition, AgentRunEvent, AgentRunRequest } from '../../shared/agent-types'
 
 export { ToolRegistry, toolRegistry } from './tool-registry'
 export { ReActAgent } from './react-loop'
 export { agentStore } from './agent-store'
+export { runAgent, stopAgent, stopAllAgents, isAgentRunning } from './agent-runtime'
+export { registerControlTools } from './control-tools'
 export type {
   IAgent,
   AgentInput,
@@ -59,6 +63,48 @@ export function setupAgentHandlers(): void {
 
   ipcMain.handle('agent:delete', async (_event, id: string) => {
     return agentStore.delete(String(id || ''))
+  })
+
+  // ===== 智能体运行时（T02） =====
+  ipcMain.handle('agent:run', async (event, req: AgentRunRequest) => {
+    const sender = event.sender
+    const sendEvent = (ev: AgentRunEvent): void => {
+      try {
+        if (!sender.isDestroyed()) sender.send('agent:event', { agentId: req?.agentId, ...ev })
+      } catch {
+        /* pipe broken */
+      }
+    }
+    await runAgent(req, sendEvent)
+    return { success: true }
+  })
+
+  ipcMain.handle('agent:stop', async (_event, agentId: string) => {
+    stopAgent(String(agentId || ''))
+    return { success: true }
+  })
+
+  ipcMain.handle('agent:list-personas', async () => {
+    try {
+      const { personaLoader } = await import('../persona-loader')
+      return { success: true, data: personaLoader.listPersonas() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:list-tools', async () => {
+    try {
+      const data = toolRegistry.getAll().map((t) => ({
+        name: t.name,
+        description: t.description,
+        category: t.category,
+        dangerous: !!t.dangerous,
+      }))
+      return { success: true, data }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   logger.debug('[Agent] setupAgentHandlers registered')

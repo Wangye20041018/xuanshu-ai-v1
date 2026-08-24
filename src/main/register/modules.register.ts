@@ -18,6 +18,7 @@ import { is } from '@electron-toolkit/utils'
 import { createLogger } from '../utils/logging'
 import { setModuleStatus, cleanupOldNsisTempDirs, setAppReadySent, getModuleStatus } from './lifecycle.register'
 import { registerAllTools } from '../agent/tool-registry'
+import { registerControlTools } from '../agent/control-tools'
 import { internetSearch } from '../search'
 import { contextManager } from '../context-manager'
 import { getStore } from '../ipc/config.ipc'
@@ -68,6 +69,10 @@ export async function initializeAllModules(options: ModulesRegisterOptions): Pro
     registerAllTools({ dynamicOperationEngine, knowledgeGraph, vectorStore, voiceEngine, internetSearch })
     setModuleStatus('agent-tool-registry', 'ready')
   } catch (e) { setModuleStatus('agent-tool-registry', 'failed', String(e)) }
+  try {
+    registerControlTools()
+    setModuleStatus('agent-control-tools', 'ready')
+  } catch (e) { setModuleStatus('agent-control-tools', 'failed', String(e)) }
   try { voiceWakeService.initialize(); setModuleStatus('voice-wake', 'ready') } catch (e) { setModuleStatus('voice-wake', 'failed', String(e)) }
   try { externalAIClient.initialize(); setModuleStatus('external-ai', 'ready') } catch (e) { setModuleStatus('external-ai', 'failed', String(e)) }
   try { dynamicOperationEngine.initialize(); setModuleStatus('dynamic-operation', 'ready') } catch (e) { setModuleStatus('dynamic-operation', 'failed', String(e)) }

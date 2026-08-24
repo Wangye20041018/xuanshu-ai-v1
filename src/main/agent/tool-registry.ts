@@ -38,9 +38,11 @@ export class ToolRegistry {
     return Array.from(this.tools.values())
   }
 
-  /** 获取所有已启用工具 */
-  getEnabled(): ToolDefinition[] {
-    return this.getAll()
+  /** 获取所有已启用工具（可指定子集 ids 过滤） */
+  getEnabled(ids?: string[]): ToolDefinition[] {
+    if (!ids) return this.getAll()
+    const set = new Set(ids)
+    return this.getAll().filter(t => set.has(t.name))
   }
 
   /** 按分类获取工具 */
@@ -48,8 +50,8 @@ export class ToolRegistry {
     return this.getAll().filter(t => t.category === category)
   }
 
-  /** 获取 Function Calling 格式的工具列表（注入到 LLM 请求） */
-  getFunctionCallingTools(): Array<{
+  /** 获取 Function Calling 格式的工具列表（注入到 LLM 请求），可指定子集 */
+  getFunctionCallingTools(ids?: string[]): Array<{
     type: 'function'
     function: {
       name: string
@@ -57,7 +59,7 @@ export class ToolRegistry {
       parameters: ToolDefinition['parameters']
     }
   }> {
-    return this.getAll().map(tool => ({
+    return this.getEnabled(ids).map(tool => ({
       type: 'function' as const,
       function: {
         name: tool.name,

@@ -42,6 +42,7 @@ export class ReActAgent implements IAgent {
       defaultModelId: config.defaultModelId ?? 'default',
       systemPrompt: config.systemPrompt ?? '',
       verbose: config.verbose ?? false,
+      toolIds: config.toolIds,
     }
   }
 
@@ -53,7 +54,8 @@ export class ReActAgent implements IAgent {
     this.abortController = new AbortController()
     const startTime = Date.now()
     const maxSteps = input.maxSteps ?? this._config.maxSteps
-    const tools = toolRegistry.getFunctionCallingTools()
+    const toolIds = input.toolIds ?? this._config.toolIds
+    const tools = toolRegistry.getFunctionCallingTools(toolIds)
 
     // 构建初始上下文
     const context = this.buildContext(input)
@@ -109,6 +111,22 @@ export class ReActAgent implements IAgent {
         this._state = 'acting'
         yield { type: 'tool_call', tool: toolCall.name, params: toolCall.params, step: step + 1 }
         this.stats.totalToolCalls++
+
+        // 工具子集闸：per-agent 未授权工具直接拒绝（纵深防御，模型本不该看到）
+        if (!this.isToolAllowed(toolCall.name)) {
+          yield {
+            type: 'tool_result',
+            tool: toolCall.name,
+            result: { success: false, error: `工具 ${toolCall.name} 未授权给该智能体` },
+            step: step + 1,
+          }
+          context.push({
+            role: 'tool',
+            content: JSON.stringify({ success: false, error: `工具 ${toolCall.name} 未授权给该智能体` }),
+            name: toolCall.name,
+          })
+          continue
+        }
 
         // 危险工具人工确认门：拒绝则产出失败结果并继续循环，不抛未捕获异常
         const tool = toolRegistry.get(toolCall.name)
@@ -229,7 +247,7 @@ export class ReActAgent implements IAgent {
   }
 
   private getDefaultSystemPrompt(): string {
-    const toolList = toolRegistry.getAll()
+    const toolList = toolRegistry.getEnabled(this._config.toolIds)
       .map(t => `- **${t.name}**: ${t.description}`)
       .join('\n')
 
@@ -261,6 +279,13 @@ ${toolList}
     } catch {
       return false
     }
+  }
+
+  /** 工具子集闸：未配置 toolIds 时放行全部；配置后仅允许子集内工具 */
+  private isToolAllowed(name: string): boolean {
+    const toolIds = this._config.toolIds
+    if (!toolIds || toolIds.length === 0) return true
+    return toolIds.includes(name)
   }
 
   private parseToolCall(text: string): { name: string; params: Record<string, unknown> } | null {

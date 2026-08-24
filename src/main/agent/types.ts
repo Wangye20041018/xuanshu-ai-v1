@@ -56,6 +56,8 @@ export interface AgentInput {
   maxSteps?: number
   timeout?: number
   stream?: boolean
+  /** per-agent 工具子集（可选）：未提供时回落 AgentConfig.toolIds */
+  toolIds?: string[]
 }
 
 export interface AgentConfig {
@@ -64,6 +66,8 @@ export interface AgentConfig {
   defaultModelId: string
   systemPrompt: string
   verbose: boolean
+  /** per-agent 工具子集（可选）：未提供时使用全局工具集 */
+  toolIds?: string[]
 }
 
 // ---- IAgent 接口 ----
