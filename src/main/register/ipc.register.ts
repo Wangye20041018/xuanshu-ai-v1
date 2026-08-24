@@ -72,6 +72,7 @@ import { setupTTSHandlers } from '../ipc/tts.ipc'
 import { setupMissingHandlers } from '../ipc/system.ipc'
 import { setupUIAutomationIPC } from '../ui-automation'
 import { setupVisualAgentHandlers, setupAgentHandlers } from '../agent'
+import { setupPanicHandlers } from '../agent/panic-stop'
 import { setupSkillPackHandlers, loadLearnedSkillPacks } from '../skill-pack'
 import { setupPptFlowHandlers } from '../ppt-flow'
 import { setupEmotionHandlers } from '../persona/emotion-engine'
@@ -532,6 +533,7 @@ export function setupAllIpcHandlers(options: {
   try { setupPersonaLoaderHandlers() } catch (e) { logger.warn(`[IPC] personaLoader handlers: ${e}`) }
   try { setupUIAutomationIPC() } catch (e) { logger.warn(`[IPC] uiAutomation handlers: ${e}`) }
   try { setupAgentHandlers() } catch (e) { logger.warn(`[IPC] agent handlers: ${e}`) }
+  try { setupPanicHandlers() } catch (e) { logger.warn(`[IPC] panic handlers: ${e}`) }
   try { setupHealthCheckHandlers() } catch (e) { logger.warn(`[IPC] healthCheck handlers: ${e}`) }
   try { options.performanceProfiler?.setupPerfHandlers?.() } catch (e) { logger.warn(`[IPC] perf handlers: ${e}`) }
   try { setupMissingHandlers() } catch (e) { logger.warn(`[IPC] missing handlers: ${e}`) }

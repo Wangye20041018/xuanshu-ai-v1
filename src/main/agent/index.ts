@@ -15,6 +15,8 @@ export { ReActAgent } from './react-loop'
 export { agentStore } from './agent-store'
 export { runAgent, stopAgent, stopAllAgents, isAgentRunning } from './agent-runtime'
 export { registerControlTools } from './control-tools'
+export { createAgentPreview, confirmCreateAgent } from './agent-factory'
+export { setupPanicStop, teardownPanicStop, triggerPanicStop, setupPanicHandlers } from './panic-stop'
 export type {
   IAgent,
   AgentInput,
@@ -102,6 +104,47 @@ export function setupAgentHandlers(): void {
         dangerous: !!t.dangerous,
       }))
       return { success: true, data }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // ===== 动态创建（T03） =====
+  ipcMain.handle('agent:create-request', async (_event, requirement: string) => {
+    const { createAgentPreview } = await import('./agent-factory')
+    return createAgentPreview(String(requirement || ''))
+  })
+
+  ipcMain.handle('agent:create-confirm', async (_event, preview: import('../../shared/agent-types').AgentCreatePreview) => {
+    const { confirmCreateAgent } = await import('./agent-factory')
+    return confirmCreateAgent(preview)
+  })
+
+  // ===== 控制白名单（T03） =====
+  ipcMain.handle('agent:whitelist-list', async () => {
+    try {
+      const { controlWhitelist } = await import('../permission/control-whitelist')
+      return { success: true, data: controlWhitelist.list() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:whitelist-add', async (_event, args: { toolName: string; scope?: 'tool' | 'category'; category?: string }) => {
+    try {
+      const { controlWhitelist } = await import('../permission/control-whitelist')
+      const ok = controlWhitelist.add(String(args?.toolName || ''), args?.scope ?? 'tool', args?.category)
+      return { success: ok }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:whitelist-remove', async (_event, toolName: string) => {
+    try {
+      const { controlWhitelist } = await import('../permission/control-whitelist')
+      const ok = controlWhitelist.remove(String(toolName || ''))
+      return { success: ok }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
     }

@@ -16,14 +16,35 @@ import { toolRegistry } from './tool-registry'
 import { logger } from '../../shared/logger'
 import { notifyControlStart, notifyControlFinish } from '../control-state'
 
-/** 单步控制确认门：委托 visualAgent.confirmSingleAction（原生弹窗） */
-async function confirmAction(label: string, detail: string): Promise<boolean> {
+/**
+ * 控制动作确认门（三级闸门 ① 白名单 + ② 确认门）。
+ * 白名单命中直接放行；未命中弹窗确认，用户勾选「记住」则写入白名单；
+ * 白名单模块未就绪时回退 visualAgent.confirmSingleAction 兜底。
+ */
+async function confirmControl(
+  toolName: string,
+  category: string,
+  label: string,
+  detail: string,
+): Promise<boolean> {
   try {
-    const { visualAgent } = await import('../visual-agent')
-    return await visualAgent.confirmSingleAction(label, detail)
+    const { controlWhitelist } = await import('../permission/control-whitelist')
+    if (controlWhitelist.isAllowed(toolName, category)) {
+      return true
+    }
+    const { allowed, remember } = await controlWhitelist.confirm(toolName, category, label, detail)
+    if (allowed && remember) {
+      controlWhitelist.add(toolName, 'tool', category)
+    }
+    return allowed
   } catch (e) {
-    logger.warn(`[ControlTools] 确认门异常，拒绝执行: ${e instanceof Error ? e.message : String(e)}`)
-    return false
+    logger.warn(`[ControlTools] 白名单确认门异常，回退旧确认门: ${e instanceof Error ? e.message : String(e)}`)
+    try {
+      const { visualAgent } = await import('../visual-agent')
+      return await visualAgent.confirmSingleAction(label, detail)
+    } catch {
+      return false
+    }
   }
 }
 
@@ -62,7 +83,7 @@ export function registerControlTools(): void {
       },
       required: ['x', 'y'],
     },
-    confirm: (p) => confirmAction('点击', `坐标 (${p.x}, ${p.y})`),
+    confirm: (p) => confirmControl('click_at', 'system', '点击', `坐标 (${p.x}, ${p.y})`),
     execute: async (p) => {
       const x = Number(p.x)
       const y = Number(p.y)
@@ -91,7 +112,7 @@ export function registerControlTools(): void {
       },
       required: ['x', 'y'],
     },
-    confirm: (p) => confirmAction('双击', `坐标 (${p.x}, ${p.y})`),
+    confirm: (p) => confirmControl('double_click_at', 'system', '双击', `坐标 (${p.x}, ${p.y})`),
     execute: async (p) => {
       const x = Number(p.x)
       const y = Number(p.y)
@@ -120,7 +141,7 @@ export function registerControlTools(): void {
       },
       required: ['x', 'y'],
     },
-    confirm: (p) => confirmAction('右键点击', `坐标 (${p.x}, ${p.y})`),
+    confirm: (p) => confirmControl('right_click_at', 'system', '右键点击', `坐标 (${p.x}, ${p.y})`),
     execute: async (p) => {
       const x = Number(p.x)
       const y = Number(p.y)
@@ -148,7 +169,7 @@ export function registerControlTools(): void {
       },
       required: ['text'],
     },
-    confirm: (p) => confirmAction('键盘输入', `文本：${String(p.text || '').slice(0, 40)}`),
+    confirm: (p) => confirmControl('type_text', 'system', '键盘输入', `文本：${String(p.text || '').slice(0, 40)}`),
     execute: async (p) => {
       const text = String(p.text || '')
       if (!text) return { success: false, error: '文本不能为空' }
@@ -173,7 +194,7 @@ export function registerControlTools(): void {
       },
       required: ['keys'],
     },
-    confirm: (p) => confirmAction('发送按键', `按键：${String(p.keys || '')}`),
+    confirm: (p) => confirmControl('press_keys', 'system', '发送按键', `按键：${String(p.keys || '')}`),
     execute: async (p) => {
       const keys = String(p.keys || '')
       if (!keys) return { success: false, error: '按键不能为空' }
@@ -201,7 +222,7 @@ export function registerControlTools(): void {
       },
       required: ['fromX', 'fromY', 'toX', 'toY'],
     },
-    confirm: (p) => confirmAction('拖拽', `(${p.fromX}, ${p.fromY}) → (${p.toX}, ${p.toY})`),
+    confirm: (p) => confirmControl('drag_at', 'system', '拖拽', `(${p.fromX}, ${p.fromY}) → (${p.toX}, ${p.toY})`),
     execute: async (p) => {
       const fromX = Number(p.fromX)
       const fromY = Number(p.fromY)
@@ -233,7 +254,7 @@ export function registerControlTools(): void {
       },
       required: ['x', 'y', 'delta'],
     },
-    confirm: (p) => confirmAction('滚动', `坐标 (${p.x}, ${p.y}) 增量 ${p.delta}`),
+    confirm: (p) => confirmControl('scroll_at', 'system', '滚动', `坐标 (${p.x}, ${p.y}) 增量 ${p.delta}`),
     execute: async (p) => {
       const x = Number(p.x)
       const y = Number(p.y)
