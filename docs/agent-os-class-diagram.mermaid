@@ -1,0 +1,112 @@
+classDiagram
+    class AgentDefinition {
+        +string id
+        +string name
+        +string description
+        +string personaId
+        +AgentMemoryConfig memoryConfig
+        +AgentModelConfig modelConfig
+        +string[] toolIds
+        +string[] tags
+        +number createdAt
+    }
+    class AgentMemoryConfig {
+        +boolean enabled
+        +string namespace
+        +number maxRecall
+    }
+    class AgentModelConfig {
+        +string modelId
+        +number temperature
+        +number maxSteps
+    }
+
+    class AgentStore {
+        +list() AgentDefinition[]
+        +get(id) AgentDefinition
+        +save(def) void
+        +remove(id) void
+        +validate(def) boolean
+    }
+
+    class AgentRuntime {
+        +run(agentId, messages) AsyncIterable
+        +cancel(agentId) void
+    }
+
+    class AgentFactory {
+        +generate(requirement) AgentDefinition
+        +confirm(def) AgentDefinition
+    }
+
+    class ReActAgent {
+        +id string
+        +state AgentState
+        +run(input) AsyncIterable
+        +cancel() void
+        +confirmIfDangerous(tool, params) boolean
+    }
+
+    class ToolRegistry {
+        +register(tool) void
+        +getEnabled(ids) ToolDefinition[]
+        +execute(name, params) ToolResult
+    }
+
+    class PermissionWhitelist {
+        +check(toolName) boolean
+        +add(entry) void
+        +list() WhitelistEntry[]
+    }
+
+    class PanicStop {
+        +register(globalShortcut) void
+        +trigger() void
+        +isActive() boolean
+    }
+
+    class Orchestrator {
+        +plan(goal) SwarmTask
+        +execute(task) SwarmResult
+        +degradeToManual(task) SwarmTask
+    }
+
+    class PersonaLoader {
+        +listPersonas() PersonaMeta[]
+        +getPersona(id) PersonaMeta
+    }
+
+    class BrowserTabManager {
+        +createTab(url) void
+        +navigate(tabId, url) void
+        +back(tabId) void
+        +forward(tabId) void
+    }
+
+    class BrowserSecurity {
+        +blockNavigation(handler) void
+        +blockNewWindow(handler) void
+        +manageDownloads() void
+    }
+
+    class BrowserFeedAI {
+        +extractText(tabId) string
+        +screenshot(tabId) string
+        +executeInPage(tabId, js) unknown
+    }
+
+    AgentDefinition --> AgentMemoryConfig : has
+    AgentDefinition --> AgentModelConfig : has
+    AgentStore --> AgentDefinition : manages
+    AgentRuntime --> AgentStore : reads
+    AgentRuntime --> PersonaLoader : reads persona
+    AgentRuntime --> ToolRegistry : filters tools
+    AgentRuntime --> ReActAgent : instantiates
+    AgentFactory --> PersonaLoader : reads templates
+    AgentFactory --> AgentStore : saves
+    AgentFactory --> AgentRuntime : reuses model
+    ReActAgent --> ToolRegistry : executes tools
+    ToolRegistry --> PermissionWhitelist : consults
+    ToolRegistry --> PanicStop : checks
+    Orchestrator --> AgentRuntime : dispatches steps
+    Orchestrator --> AgentStore : lists agents

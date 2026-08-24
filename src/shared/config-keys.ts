@@ -23,6 +23,11 @@ export const CONFIG_KEYS = {
   TANDEM_CONFIG: 'tandemConfig',
   NOISE_FILTER_ON: 'noiseFilterOn',
   NOISE_LEVEL: 'noiseLevel',
+  // ===== 智能体操作系统 · 控制电脑发光特效 =====
+  CONTROL_GLOW_ENABLED: 'controlGlowEnabled',
+  CONTROL_GLOW_BRIGHTNESS: 'controlGlowBrightness',
+  CONTROL_GLOW_COLOR: 'controlGlowColor',
+  CONTROL_GLOW_INTENSITY: 'controlGlowIntensity',
 } as const
 
 export const skillKey = (skillId: string) => `skill_${skillId}`

@@ -1,0 +1,2 @@
+6e24ef8 fix(self-modify): 修复大小写绕过 L3 黑名单与 rollback 越权
+d1db1e1 feat: UX 深度优化 + 自我改造能力

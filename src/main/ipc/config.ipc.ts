@@ -43,6 +43,10 @@ interface AppConfig {
   floatingBallEnabled: boolean
   orbEnabled: boolean
   voiceprint?: any
+  controlGlowEnabled: boolean
+  controlGlowBrightness: number
+  controlGlowColor: string
+  controlGlowIntensity: number
 }
 
 interface ProviderConfig {
@@ -98,6 +102,11 @@ const ALLOWED_CONFIG_KEYS = new Set([
   'webSearchEnabled',
   'homeQuickActions',
   'selfModifyWriteEnabled',
+  // ===== 智能体操作系统 · 控制电脑发光特效 =====
+  'controlGlowEnabled',
+  'controlGlowBrightness',
+  'controlGlowColor',
+  'controlGlowIntensity',
   // ===== 预留（规划中）=====
   'wakeWord', 'wakeWordEnabled', 'wakeWordSensitivity',
   'phoneSyncEnabled', 'phoneChannels',
@@ -181,6 +190,11 @@ function initStore(): void {
       orbSize: 220,
       floatingBallEnabled: false,
       orbEnabled: false,
+      // 智能体操作系统 · 发光特效默认开启 + 可调
+      controlGlowEnabled: true,
+      controlGlowBrightness: 0.8,
+      controlGlowColor: 'blueviolet',
+      controlGlowIntensity: 0.7,
     }
   })
 }

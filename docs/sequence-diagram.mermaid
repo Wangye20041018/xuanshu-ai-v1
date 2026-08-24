@@ -1,236 +1,63 @@
 sequenceDiagram
-    actor User
-    participant Renderer as 渲染进程
-    participant ChatIPC as chat:send Handler
-    participant TaskRouter as TaskRouter
-    participant ProviderReg as ProviderRegistry
-    participant ModelMgr as ModelManager
-    participant SGLangIPC as SGLang IPC
-    participant SGLangProc as SGLang 子进程
-    participant CPUEngine as CpuInferenceEngine
-    participant Provider as LLMProvider
+    autonumber
+    actor U as 用户
+    participant P as SelfModifyPage
+    participant S as SelfModifyStore
+    participant I as SelfModifyService(main)
+    participant G as Git
+    participant M as modelManager
+    participant W as BrowserWindow
 
-    %% ── 完整 chat:send 流程 ──
-    rect rgb(240, 248, 255)
-        Note over User,Provider: === 流程1: chat:send 完整链路（含路由+降级） ===
-        User->>Renderer: 发送消息
-        Renderer->>ChatIPC: invoke('chat:send', request)
-        ChatIPC->>ChatIPC: 输入校验 (msg≤100, len≤128KB)
-        ChatIPC->>ProviderReg: getProvider(activeProviderId)
+    U->>P: 输入自然语言改造需求
+    P->>S: run(requirement)
+    S->>I: self-modify:get-capabilities
+    I-->>S: capabilities (writeEnabled, whitelist)
 
-        alt 外部 Provider 已配置
-            ChatIPC->>ProviderReg: getProvider(activeId)
-            ProviderReg-->>ChatIPC: provider (OpenAI/Anthropic/Ollama)
-        end
+    rect rgb(240,248,255)
+        note over S,M: L0 只读分析阶段
+        S->>I: self-modify:list-files / read-file
+        I-->>S: 源码内容
+    end
 
-        ChatIPC->>TaskRouter: route(signal)
-        TaskRouter-->>ChatIPC: void (异常被吞)
+    S->>I: self-modify:generate(requirement)
+    I->>M: generateResponse(prompt + 源码)
+    M-->>I: plan + patch
+    I->>I: 白名单校验 + 风险分级
+    I-->>S: ChangeSet + estimatedRisk
 
-        alt 无外部 Provider
-            ChatIPC->>ChatIPC: ensureLocalProvider()
+    S->>I: self-modify:preview-diff(changeSet)
+    I->>I: 生成 unified diff
+    I-->>S: DiffResult
+    P->>P: DiffViewer 展示文件清单+增删行
 
-            ChatIPC->>SGLangIPC: fetch /v1/models (3s超时)
-            alt SGLang 在线
-                SGLangIPC-->>ChatIPC: 200 OK
-                ChatIPC->>ProviderReg: createProvider(type='sglang')
-                ProviderReg-->>ChatIPC: SGLangProvider
-                ChatIPC->>ProviderReg: registerProvider(__local_sglang__)
-                Note right of ChatIPC: ⚠️ 覆盖旧Provider, 无清理
-            else SGLang 不在线
-                ChatIPC->>ModelMgr: getLoadedModel()
-                ModelMgr-->>ChatIPC: currentModel | null
-                alt 模型已加载
-                    ChatIPC->>ModelMgr: getGpuModelType()
-                    ModelMgr-->>ChatIPC: 'quality' | 'main' | ...
-                    ChatIPC->>ProviderReg: createProvider(type='localcpu'|'localgpu')
-                    ProviderReg-->>ChatIPC: LocalCPUProvider | LocalGPUProvider
-                    ChatIPC->>ProviderReg: registerProvider(__local_cpu__|__local_gpu__)
-                    Note right of ChatIPC: ⚠️ 覆盖旧Provider
-                else 无模型
-                    ChatIPC-->>Renderer: error: "未配置 AI 提供商..."
-                end
-            end
-        end
+    U->>P: 确认应用
+    P->>S: confirmApply()
+    S->>I: self-modify:apply(changeSet)
 
-        alt stream=true
-            ChatIPC->>ChatIPC: new AbortController()
-            ChatIPC->>ChatIPC: streamAbortControllers.set(sessionId, ctrl)
-
-            ChatIPC->>Provider: generateStream(messages, onChunk, signal)
-            activate Provider
-
-            loop 流式响应
-                Provider->>Provider: reader.read()
-                Provider->>Provider: SSE 解析
-                Provider->>Renderer: send('chat:stream', {chunk, done:false})
-                alt signal.aborted
-                    Provider-->>ChatIPC: break
-                end
-            end
-
-            deactivate Provider
-            ChatIPC->>ChatIPC: streamAbortControllers.delete(sessionId)
-            ChatIPC->>Renderer: send('chat:stream', {chunk:'', done:true})
-            ChatIPC->>ModelMgr: updateModelUsage(modelId)
-            ChatIPC-->>Renderer: {success:true, content:fullResponse}
-
-        else stream=false
-            ChatIPC->>Provider: generate(messages)
-            Provider-->>ChatIPC: response
-            ChatIPC->>ModelMgr: updateModelUsage(modelId)
-            ChatIPC-->>Renderer: {success:true, content:response}
+    rect rgb(255,245,238)
+        note over I,G: 写模式安全流程
+        I->>G: git add -A && commit (snapshot)
+        G-->>I: snapshotHash
+        I->>I: 写文件
+        alt 写入/校验失败
+            I->>G: git checkout <hash> -- files
+            I-->>S: { success:false }
+        else 成功
+            I->>I: 审计日志
+            I-->>S: { success:true, snapshotHash }
         end
     end
 
-    %% ── 模型加载 + SGLang 降级流程 ──
-    rect rgb(255, 248, 240)
-        Note over User,CPUEngine: === 流程2: loadModel SGLang→CPU 降级 ===
-        Renderer->>ModelMgr: loadModel(modelId)
-
-        ModelMgr->>ModelMgr: 检查 model 已注册
-        ModelMgr->>ModelMgr: 检查 model.path 存在
-
-        alt 已加载同模型
-            ModelMgr->>ModelMgr: 更新 lastUsed + resetIdleTimer
-            ModelMgr-->>Renderer: true
-        end
-
-        alt 已加载其他模型
-            ModelMgr->>ModelMgr: unloadModel() + wait 2s
-            Note right of ModelMgr: ⚠️ 不检查 isGenerating
-        end
-
-        ModelMgr->>CPUEngine: isGpuAvailable()
-        CPUEngine-->>ModelMgr: {available, vramMB}
-
-        alt GPU 可用
-            ModelMgr->>SGLangIPC: ensureWSLDetected()
-
-            alt WSL2 模式
-                ModelMgr->>ModelMgr: Gate: quality? size>5GB?
-
-                alt 通过门控
-                    ModelMgr->>SGLangIPC: startSGLangServer(model.path)
-                    SGLangIPC->>SGLangIPC: 检查已有进程 ⚠️ 无防护
-                    SGLangIPC->>SGLangProc: spawn(python -m sglang.launch_server)
-                    SGLangIPC->>SGLangIPC: 轮询 /health (2s×120s)
-
-                    alt 启动成功
-                        SGLangIPC-->>ModelMgr: true
-                        ModelMgr->>ModelMgr: 设置 currentModel, gpuModelType
-                        ModelMgr-->>Renderer: true
-                    else 启动失败/超时
-                        SGLangIPC-->>ModelMgr: false
-                        ModelMgr->>ModelMgr: tryCpuLoad(model)
-                        ModelMgr->>CPUEngine: loadModel(config)
-                        CPUEngine-->>ModelMgr: ok
-                        ModelMgr-->>Renderer: ok
-                    end
-
-                else 被门控拦截
-                    ModelMgr->>ModelMgr: tryCpuLoad(model)
-                    ModelMgr->>CPUEngine: loadModel(config)
-                    CPUEngine-->>ModelMgr: ok/fail
-                    ModelMgr-->>Renderer: ok/fail
-                end
-
-            else 非 WSL
-                ModelMgr->>ModelMgr: 静默回退 CPU
-                ModelMgr->>CPUEngine: loadModel(config)
-                CPUEngine-->>ModelMgr: ok/fail
-                ModelMgr-->>Renderer: ok/fail
-            end
-        else GPU 不可用
-            ModelMgr->>CPUEngine: loadModel(config)
-            CPUEngine-->>ModelMgr: ok/fail
-            ModelMgr-->>Renderer: ok/fail
-        end
+    alt renderer 改动
+        S->>W: webContents.reload()
+    else main 改动
+        S->>W: app.relaunch() + app.exit(0)
+    else 配置/人设改动
+        S->>I: 热加载对应模块
     end
 
-    %% ── SGLang 启停竞态 ──
-    rect rgb(255, 240, 240)
-        Note over SGLangIPC,SGLangProc: === 流程3: SGLang 启停竞态窗口 ===
-        par 并发调用
-            SGLangIPC->>SGLangIPC: startSGLangServer(A)
-            and
-            SGLangIPC->>SGLangIPC: startSGLangServer(B)
-        end
-
-        Note over SGLangIPC: ⚠️ 两个调用同时到达 startSGLangWithModel
-        Note over SGLangIPC: sglangProcess=null → 两个都执行 spawn()
-        Note over SGLangIPC: 第一个进程未保存，泄漏
-
-        SGLangIPC->>SGLangIPC: stopSGLang()
-        SGLangIPC->>SGLangIPC: sglangProcess = null ← 先行置空
-        Note over SGLangIPC: ⚠️ TOCTOU: 另一个线程看到 null
-        SGLangIPC->>SGLangProc: kill('SIGTERM')
-        SGLangProc-->>SGLangIPC: exit (10s内)
-    end
-
-    %% ── 显存调度三态切换 ──
-    rect rgb(240, 255, 240)
-        Note over ModelMgr,CPUEngine: === 流程4: 显存调度三态切换 ===
-
-        Note over ModelMgr: 初始状态: gpuModelType=null
-
-        ModelMgr->>ModelMgr: loadModel('qwen2-vl-7b')
-        ModelMgr->>ModelMgr: gpuModelType = 'main'
-        Note over ModelMgr: VL-7B 常驻 (SGLang)
-
-        ModelMgr->>ModelMgr: swapToQuality()
-        ModelMgr->>ModelMgr: unloadModel()
-        ModelMgr->>SGLangIPC: stopSGLang()
-        ModelMgr->>CPUEngine: unload() ← ⚠️ 无条件卸载
-        ModelMgr->>CPUEngine: loadModel(14B, gpuLayers=22)
-        ModelMgr->>ModelMgr: gpuModelType = 'quality'
-        Note over ModelMgr: InternVL2.5-14B (node-llama-cpp 部分卸载)
-
-        ModelMgr->>ModelMgr: swapToMain()
-        ModelMgr->>CPUEngine: unload() ← ⚠️ 无条件卸载
-        ModelMgr->>ModelMgr: unloadModel()
-        ModelMgr->>SGLangIPC: stopSGLang()
-        ModelMgr->>ModelMgr: loadModel('qwen2-vl-7b')
-        ModelMgr->>ModelMgr: gpuModelType = 'main'
-        Note over ModelMgr: 回 VL-7B 常驻
-
-        Note over ModelMgr: ⚠️ swapToQuality 失败时
-        ModelMgr->>ModelMgr: gpuModelType = 'main' ← 但 loadModel 可能也失败
-    end
-
-    %% ── 空闲回收 ──
-    rect rgb(248, 248, 255)
-        Note over ModelMgr: === 流程5: 空闲回收逻辑 ===
-
-        loop 每60秒
-            ModelMgr->>ModelMgr: cleanupUnusedModels()
-
-            alt isGenerating
-                Note over ModelMgr: 跳过，不卸载
-            else 质量态空闲>15分钟
-                ModelMgr->>ModelMgr: swapToMain()
-                Note over ModelMgr: 释放14B回VL-7B
-            else main/vision 空闲>15分钟
-                Note over ModelMgr: VL-7B常驻，不卸载
-            end
-        end
-
-        Note over ModelMgr: ⚠️并发风险: cleanup 与 loadModel 可能交错
-    end
-
-    %% ── Abort 流程 ──
-    rect rgb(255, 255, 240)
-        Note over User,Provider: === 流程6: 用户中止流式响应 ===
-        User->>Renderer: 点击停止
-        Renderer->>ChatIPC: invoke('chat:stop', sessionId)
-
-        alt sessionId 指定
-            ChatIPC->>ChatIPC: streamAbortControllers.get(sessionId)
-            ChatIPC->>ChatIPC: controller.abort()
-            ChatIPC->>ChatIPC: streamAbortControllers.delete(sessionId)
-            Note over ChatIPC: Provider 的 while 循环检测到 signal.aborted → break
-            Note over ChatIPC: finally 发送 done:true
-        else 无 sessionId (fallback)
-            ChatIPC->>ChatIPC: 遍历所有 controller → abort()
-            ChatIPC->>ChatIPC: streamAbortControllers.clear()
-        end
-    end
+    U->>P: 应用失败，选择回退
+    P->>S: rollback()
+    S->>I: self-modify:rollback(snapshotHash)
+    I->>G: git checkout <hash>
+    I-->>S: { success:true }

@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant U as 用户
+    participant R as Renderer
+    participant F as AgentFactory
+    participant LLM as ModelManager
+    participant S as AgentStore
+    participant RT as AgentRuntime
+    participant P as PersonaLoader
+    participant TR as ToolRegistry
+    participant W as PermissionWhitelist
+    participant PS as PanicStop
+
+    Note over U,PS: ① 对话式创建智能体
+    U->>R: 「建一个股票分析智能体」
+    R->>F: agent:create-request(自然语言)
+    F->>P: listPersonas() 取模板
+    F->>LLM: 模板填空 prompt → generateResponse
+    LLM-->>F: JSON 配置（严格解析）
+    F-->>R: AgentDefinition 预览（confirmed=false）
+    R->>U: 展示表单可改
+    U->>R: 点「确认创建」
+    R->>F: agent:create-confirm(def, confirmed=true)
+    F->>S: save(def)
+    S-->>R: 返回 AgentDefinition
+
+    Note over U,PS: ② 凭 agentId 拉起 ReAct 循环
+    R->>RT: agent:run(agentId, messages)
+    RT->>S: get(agentId)
+    RT->>P: getPersona(personaId) 取 system_prompt
+    RT->>TR: getEnabled(toolIds) 过滤工具子集
+    RT->>RT: new ReActAgent(systemPrompt+记忆, 子工具集)
+    RT-->>R: 广播 agent:event（thinking/tool_call/result/response）
+
+    Note over U,PS: ③ 控制电脑白名单 + 紧急暂停
+    RT->>TR: execute('click_at', params)
+    TR->>W: check('click_at')
+    alt 白名单命中
+        W-->>TR: 放行 → desktop-automation 执行
+    else 未命中
+        TR->>R: confirmExecute 弹窗确认
+        R->>U: 用户确认（可勾选记住）
+        R->>W: add('click_at') 持久化
+    end
+    U->>PS: 按 Ctrl+Shift+F12
+    PS->>TR: abort 所有任务 + 杀子进程
+    PS-->>R: 广播 control:panic
+
+    Note over U,PS: ④ 群协作自动调度 + 降级
+    R->>RT: swarm:execute(goal)
+    RT->>F: 列出 agents 能力 → AI 生成 SwarmTask DAG
+    alt 解析失败 / 无合法 DAG
+        RT-->>R: 降级 manual（任务清单待用户编排）
+    else 自动模式
+        RT->>RT: 拓扑排序逐 step 派发 agent-runtime.run
+        RT-->>R: 汇总各 step output → summary
+    end

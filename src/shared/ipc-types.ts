@@ -58,3 +58,57 @@ export interface PermissionStatus {
   allGranted: boolean
   requiredGranted: boolean
 }
+
+/* ============================================================
+ * 智能体操作系统（Agent OS）IPC 返回值类型
+ * 复用 shared/agent-types 的共享 schema
+ * ============================================================ */
+
+export interface AgentListResult {
+  success: boolean
+  data?: import('./agent-types').AgentDefinition[]
+  error?: string
+}
+
+export interface AgentGetResult {
+  success: boolean
+  data?: import('./agent-types').AgentDefinition
+  error?: string
+}
+
+export interface AgentSaveResult {
+  success: boolean
+  data?: import('./agent-types').AgentDefinition
+  error?: string
+}
+
+export interface AgentCreatePreviewResult {
+  success: boolean
+  data?: import('./agent-types').AgentCreatePreview
+  error?: string
+}
+
+export interface AgentWhitelistResult {
+  success: boolean
+  data?: import('./agent-types').WhitelistEntry[]
+  error?: string
+}
+
+export interface SwarmPlanResult {
+  success: boolean
+  data?: import('./agent-types').SwarmTask
+  error?: string
+}
+
+export interface SwarmRunResult {
+  success: boolean
+  data?: import('./agent-types').SwarmResult
+  error?: string
+}
+
+export interface GlowConfig {
+  controlGlowEnabled: boolean
+  controlGlowBrightness: number
+  controlGlowColor: string
+  controlGlowIntensity: number
+}
