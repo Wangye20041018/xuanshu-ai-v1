@@ -516,6 +516,7 @@ export type IpcChannels =
   | 'browser:go-forward'
   | 'browser:reload'
   | 'browser:list-tabs'
+  | 'browser:set-bounds'
   | 'browser:extract-content'
   | 'browser:screenshot'
   | 'browser:add-bookmark'

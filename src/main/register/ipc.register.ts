@@ -73,6 +73,8 @@ import { setupMissingHandlers } from '../ipc/system.ipc'
 import { setupUIAutomationIPC } from '../ui-automation'
 import { setupVisualAgentHandlers, setupAgentHandlers } from '../agent'
 import { setupPanicHandlers } from '../agent/panic-stop'
+import { setupSwarmHandlers } from '../agent/orchestrator'
+import { setupBrowserHandlers } from '../browser'
 import { setupSkillPackHandlers, loadLearnedSkillPacks } from '../skill-pack'
 import { setupPptFlowHandlers } from '../ppt-flow'
 import { setupEmotionHandlers } from '../persona/emotion-engine'
@@ -534,6 +536,8 @@ export function setupAllIpcHandlers(options: {
   try { setupUIAutomationIPC() } catch (e) { logger.warn(`[IPC] uiAutomation handlers: ${e}`) }
   try { setupAgentHandlers() } catch (e) { logger.warn(`[IPC] agent handlers: ${e}`) }
   try { setupPanicHandlers() } catch (e) { logger.warn(`[IPC] panic handlers: ${e}`) }
+  try { setupSwarmHandlers() } catch (e) { logger.warn(`[IPC] swarm handlers: ${e}`) }
+  try { setupBrowserHandlers() } catch (e) { logger.warn(`[IPC] browser handlers: ${e}`) }
   try { setupHealthCheckHandlers() } catch (e) { logger.warn(`[IPC] healthCheck handlers: ${e}`) }
   try { options.performanceProfiler?.setupPerfHandlers?.() } catch (e) { logger.warn(`[IPC] perf handlers: ${e}`) }
   try { setupMissingHandlers() } catch (e) { logger.warn(`[IPC] missing handlers: ${e}`) }

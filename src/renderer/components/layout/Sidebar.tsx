@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   MessageSquare, Mic, Settings, Brain, BookOpen, Puzzle,
-  Zap, Monitor, ChevronLeft, ChevronRight, Wrench, Bot,
+  Zap, Monitor, ChevronLeft, ChevronRight, Wrench, Bot, Globe,
 } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 
@@ -37,6 +37,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'automation', labelKey: 'sidebar.automation', icon: <Zap size={18} />, path: '/automation' },
       { id: 'selfmodify', labelKey: 'sidebar.selfModify', icon: <Wrench size={18} />, path: '/self-modify' },
       { id: 'agents', labelKey: 'sidebar.agents', icon: <Bot size={18} />, path: '/agents' },
+      { id: 'browser', labelKey: 'sidebar.browser', icon: <Globe size={18} />, path: '/browser' },
     ],
   },
 ]
