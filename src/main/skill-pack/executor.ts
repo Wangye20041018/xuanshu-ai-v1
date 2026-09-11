@@ -8,6 +8,7 @@
 import { visualAgent } from '../visual-agent'
 import { skillPackManager } from './index'
 import { learnFromExecution } from './learn'
+import { matchWithLibrary, boostSkillPackMatch } from '../software-library'
 import type { SkillExecuteParams, SkillMatchResult } from './types'
 import { logger } from '../../shared/logger'
 
@@ -51,6 +52,18 @@ export async function executeSkillIntent(intent: string, params?: SkillExecutePa
   const taskId = `skill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
   if (!match) {
+    // 未命中技能包：先查软件库词典（阈值 20 的短板由词典补齐）
+    // 词典命中 → 按「通用层指南」试探起手；完全未知 → 纯通用视觉操控
+    boostSkillPackMatch(intent)
+    const libMatch = matchWithLibrary(intent)
+    if (libMatch) {
+      logger.info(`[SkillPack] 技能包未命中，软件库词典命中「${libMatch.entry.name}」，走通用指南试探`)
+      const genericIntent = `${intent}\n\n${libMatch.guideBlock}`
+      const result = await visualAgent.executeTask({ id: taskId, intent: genericIntent, maxSteps: 50 })
+      maybeLearn(intent, result)
+      return result
+    }
+
     logger.debug('[SkillPack] 无匹配技能包，走通用视觉操控')
     const result = await visualAgent.executeTask({ id: taskId, intent, maxSteps: 50 })
     maybeLearn(intent, result)

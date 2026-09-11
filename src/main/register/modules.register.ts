@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * Modules Register — 模块初始化与生命周期
  *
  * 从 index.ts 巨石中拆分出：
@@ -12,7 +12,7 @@
  */
 
 import { app, BrowserWindow } from 'electron'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { existsSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { createLogger } from '../utils/logging'
@@ -24,6 +24,11 @@ import { internetSearch } from '../search'
 import { contextManager } from '../context-manager'
 import { getStore } from '../ipc/config.ipc'
 import { modelRegistry } from '../model-registry'
+import { getSystemProxyAsync } from '../utils/proxy-resolver'
+import { tandemManager } from '../tandem-manager'
+import { getHardware, resolveModelRuntime } from '../runtime/hardware'
+import { stopSGLang } from '../ipc/sglang.ipc'
+import * as sglangModuleNS from '../ipc/sglang.ipc'
 
 const logger = createLogger('Modules')
 
@@ -35,7 +40,6 @@ interface ModulesRegisterOptions {
   vectorStore: any
   voiceEngine: any
   externalAIClient: any
-  voiceWakeService: any
   personalization: any
   mobileChannelEngine: any
   modelRegistry: any
@@ -54,7 +58,7 @@ interface ModulesRegisterOptions {
 export async function initializeAllModules(options: ModulesRegisterOptions): Promise<void> {
   const {
     mainWindow: _mainWindow, personaLoader, dynamicOperationEngine, knowledgeGraph,
-    vectorStore, voiceEngine, externalAIClient, voiceWakeService,
+    vectorStore, voiceEngine, externalAIClient,
     personalization, mobileChannelEngine, modelRegistry, modelManager,
     visionModel, permissionManager: _permissionManager, pythonRuntime: _pythonRuntime,
     deviceOptimizer: _deviceOptimizer, processGuardian: _processGuardian, performanceProfiler,
@@ -67,7 +71,7 @@ export async function initializeAllModules(options: ModulesRegisterOptions): Pro
   // ===== 批次 1: 轻量模块（立即，窗口尚未显示前快速完成） =====
   try { personaLoader.initialize(); setModuleStatus('persona-loader', 'ready') } catch (e) { setModuleStatus('persona-loader', 'failed', String(e)) }
   try {
-    registerAllTools({ dynamicOperationEngine, knowledgeGraph, vectorStore, voiceEngine, internetSearch })
+    await registerAllTools({ dynamicOperationEngine, knowledgeGraph, vectorStore, internetSearch })
     setModuleStatus('agent-tool-registry', 'ready')
   } catch (e) { setModuleStatus('agent-tool-registry', 'failed', String(e)) }
   try {
@@ -78,7 +82,6 @@ export async function initializeAllModules(options: ModulesRegisterOptions): Pro
     setupPanicStop()
     setModuleStatus('agent-panic-stop', 'ready')
   } catch (e) { setModuleStatus('agent-panic-stop', 'failed', String(e)) }
-  try { voiceWakeService.initialize(); setModuleStatus('voice-wake', 'ready') } catch (e) { setModuleStatus('voice-wake', 'failed', String(e)) }
   try { externalAIClient.initialize(); setModuleStatus('external-ai', 'ready') } catch (e) { setModuleStatus('external-ai', 'failed', String(e)) }
   try { dynamicOperationEngine.initialize(); setModuleStatus('dynamic-operation', 'ready') } catch (e) { setModuleStatus('dynamic-operation', 'failed', String(e)) }
   try { personalization.initialize(); setModuleStatus('personalization', 'ready') } catch (e) { setModuleStatus('personalization', 'failed', String(e)) }
@@ -99,7 +102,6 @@ export async function initializeAllModules(options: ModulesRegisterOptions): Pro
 
   // ===== 系统代理预热（异步检测 Windows 注册表/WinHTTP，不阻塞主流程） =====
   try {
-    const { getSystemProxyAsync } = await import('../utils/proxy-resolver')
     getSystemProxyAsync().then((proxyUrl) => {
       if (proxyUrl) logger.debug(`[Main] 系统代理预热完成: ${proxyUrl}`)
     }).catch((e) => logger.debug(`[Main] 系统代理预热失败: ${e}`))
@@ -120,26 +122,35 @@ export async function initializeAllModules(options: ModulesRegisterOptions): Pro
         return
       }
       writeLog(`model-registry: 自动激活 ${models.length} 个模型`)
-      const { tandemManager } = await import('../tandem-manager')
       // A-2 修复：按真实硬件探测结果缩放每个模型的 gpuLayers/contextSize，
       // 避免注册表固定 88 层在 6GB 显存下 OOM 回退 CPU
-      const { getHardware, resolveModelRuntime } = await import('../runtime/hardware')
       const hw = await getHardware()
+      // 推理链路开关（配置可回退）：
+      //  - mtpAutoEnable：MTP 自动识别（架构支持 MTP + 型号含 MTP 才有机会启用）
+      //  - visionCpuFallback：SGLang 不可用时自动切本地 CPU 后端跑 Qwen2-VL-2B
+      try { tandemManager.setMtpAutoEnabled(getStore().get('mtpAutoEnable', true) !== false) } catch { /* ignore */ }
+      try {
+        const visionCpuFallback: unknown = getStore().get('visionCpuFallback', true)
+        if (typeof (visionModel as any)?.setCpuFallbackEnabled === 'function') {
+          (visionModel as any).setCpuFallbackEnabled(visionCpuFallback !== false)
+        }
+      } catch { /* ignore */ }
       const scaledModels = models.map((m: any) => {
         const rt = resolveModelRuntime(m, hw)
         const gpuLayers = rt.available && rt.targetDevice === 'gpu' ? rt.gpuLayers : 0
         const contextSize = rt.contextSize || m.contextSize || 2048
-        writeLog(`model-registry: ${m.name} 运行时参数 gpuLayers=${gpuLayers} contextSize=${contextSize} device=${rt.targetDevice}${rt.reason ? `（${rt.reason}）` : ''}`)
-        return { ...m, gpuLayers, contextSize }
+        const mode = rt.targetDevice === 'gpu' ? 'gpu' : 'cpu'
+        writeLog(`model-registry: ${m.name} 运行时参数 runLocation=${m.runLocation ?? 'auto'} → ${mode} gpuLayers=${gpuLayers} contextSize=${contextSize} device=${rt.targetDevice}${rt.reason ? `（${rt.reason}）` : ''}`)
+        return { ...m, gpuLayers, contextSize, mode }
       })
       const config = {
         models: scaledModels.map((m: any) => ({
           id: m.id, name: m.name, port: m.port, modelPath: m.modelPath,
           gpuLayers: m.gpuLayers, contextSize: m.contextSize, mode: m.mode,
           temperature: m.temperature, maxTokens: m.maxTokens,
+          mmprojPath: m.mmprojPath,
         })),
         hardwareLimit: { maxVRAM_MB: 6144, maxThreads: 8 },
-        defaultMode: 'dual' as const,
       }
       tandemManager.loadConfig(config)
       for (const model of scaledModels) {
@@ -253,20 +264,26 @@ export function registerModels(options: {
     const resourceModelsPath = (name: string) => is.dev
       ? join(__dirname, '../../resources/models', name)
       : join(process.resourcesPath, 'models', name)
+    // M-2 修复：外部模型库回退（E:\模型库），用户已下载的 9B GGUF 优先注册为默认/开机模型
+    const extModelLibPath = (name: string) => join('E:\\模型库', name)
 
     const modelsToRegister: Array<{
       id: string; name: string; type: 'vision' | 'embedding' | 'main'
-      file: string; size: number; gpuLayers?: number; tier?: 'fast' | 'vision'; mode?: 'cpu'; isStandby?: boolean; contextSize?: number
+      file: string; size: number; gpuLayers?: number; tier?: 'fast' | 'vision'; mode?: 'cpu'; isStandby?: boolean; contextSize?: number; runLocation?: 'auto' | 'cpu' | 'gpu' | 'layered'
+      mmprojFile?: string; isMultimodal?: boolean
     }> = [
-      // v11.0+ 默认主模型：Qwen3.5-9B。已关闭 Electron 硬件加速让出显存，9B 直接上 GPU 推理
-      // 显存适配：RTX3060 6GB，Q4_K_M 权重 ~5.2GB，全量 offload + 4096 ctx 会占满显存导致推理死锁，
-      // 故 gpuLayers 88（留部分层 CPU 缓冲）+ contextSize 2048，保证 GPU 推理稳定
-      { id: 'qwen3.5-9b', name: 'Qwen3.5-9B-Instruct (主模型)', type: 'main', file: 'qwen3.5-9b.gguf', size: 5417, gpuLayers: 88, tier: 'fast', contextSize: 2048 },
-      { id: 'qwen2-vl-7b', name: 'Qwen2-VL-7B-Instruct', type: 'vision', file: 'qwen2-vl-7b.gguf', size: 4608, gpuLayers: 99, tier: 'fast' },
+      // v13.0 主力模型重排：仅注册两个 9B（代码主力 + 数学/STEM）+ 视觉待命 2B + 向量检索
+      // 原 qwen3.5-9b / qwopus-18b 已移除，由以下两模型取代
+      // 显存适配：RTX3060 6GB，单 9B 常驻（qwen-coder-9b），deepseek-math-9b 待命按需换载
+      // M-2 修复：两 9B 已下载到 E:\模型库，文件名为 MTP 版（与磁盘一致）
+      // P0-4 上下文 262K：9B contextSize 置 0（无绑定缺省），交由 resolveModelRuntime 按系统内存余量
+      // 探测得出可行值（KV offload 到系统内存），不再写死小值；用户/配置显式拉高（≤262144）仍被尊重。
+      // v13.x 多模态主模型：Qwopus 自带视觉头(mmproj)，发图推理直接复用主模型无需换载 2B
+      { id: 'qwen-coder-9b', name: 'Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态)', type: 'main', file: 'Qwopus3.5-9B-Coder-MTP-Q4_K_M.gguf', size: 5200, gpuLayers: 88, tier: 'fast', contextSize: 0, mmprojFile: 'mmproj-Qwopus3.5-9B-Coder-MTP-F32.gguf', isMultimodal: true },
       { id: 'nomic-embed', name: 'nomic-embed-text-v1.5', type: 'embedding', file: 'nomic-embed.gguf', size: 256 },
-      // v12.2 视觉待命模型：2B 无需 quality 档（8GB 门槛），走 vision 档，6GB 显存可加载
-      { id: 'qwen2-vl-2b', name: 'Qwen2-VL-2B (视觉待命)', type: 'vision', file: 'Qwen2-VL-2B-Instruct-Q4_K_M.gguf', size: 940, gpuLayers: 99, tier: 'vision', isStandby: true },
-      { id: 'qwen3.5-0.8b-behavior', name: 'Qwen3.5-0.8B-Instruct (角色行为)', type: 'main', file: 'qwen3.5-0.8b-instruct-Q4_K_M.gguf', size: 505, gpuLayers: 0, mode: 'cpu', isStandby: true },
+      // v13.x 冗余视觉备用：与主模型 mmproj 能力重叠，保留作离线容灾（主模型视觉不可用时兜底）
+      { id: 'qwen2-vl-2b', name: 'Qwen2-VL-2B (视觉备用)', type: 'vision', file: 'Qwen2-VL-2B-Instruct-Q4_K_M.gguf', mmprojFile: 'mmproj-Qwen2-VL-2B-Instruct-f16.gguf', size: 940, gpuLayers: 99, tier: 'vision', contextSize: 0 },
+      { id: 'deepseek-math-9b', name: 'DeepSeek-V4-Pro-Qwen3.5-9B (数学/STEM/复杂推理)', type: 'main', file: 'DeepSeek-V4-Pro-Qwen3.5-9B-MTP-Q4_K_M.gguf', size: 5200, gpuLayers: 88, tier: 'fast', contextSize: 0 },
     ]
 
     for (const m of modelsToRegister) {
@@ -274,10 +291,20 @@ export function registerModels(options: {
       if (!existsSync(p)) {
         p = resourceModelsPath(m.file)
       }
+      if (!existsSync(p)) {
+        p = extModelLibPath(m.file)
+      }
       if (existsSync(p)) {
+        // 解析 mmproj：优先外部模型库（E:\模型库），失败则按同名目录回落
+        const mmprojPath = m.mmprojFile
+          ? (existsSync(extModelLibPath(m.mmprojFile))
+            ? extModelLibPath(m.mmprojFile)
+            : join(dirname(p), m.mmprojFile))
+          : undefined
         modelManager.registerModel({
           id: m.id, name: m.name, type: m.type, path: p, size: m.size,
-          gpuLayers: m.gpuLayers, tier: m.tier, mode: m.mode,
+          gpuLayers: m.gpuLayers, tier: m.tier, mode: m.mode, runLocation: m.runLocation ?? 'auto',
+          mmprojPath,
         })
         // 同步注册到 modelRegistry（前端依赖它获取模型列表和默认模型）
         try {
@@ -285,14 +312,17 @@ export function registerModels(options: {
             id: m.id, name: m.name, type: m.type, modelPath: p,
             gpuLayers: m.gpuLayers ?? 0,
             mode: m.mode === 'cpu' ? 'cpu' : 'gpu',
+            runLocation: m.runLocation ?? 'auto',
             contextSize: m.contextSize ?? 4096,
             temperature: 0.7,
             maxTokens: 2048,
-            isDefault: m.id === 'qwen3.5-9b',
-            isStartup: m.id === 'qwen3.5-9b',
+            // M-3 修复：默认/启动主模型可配置化（用户可在设置中指定随软件启动的模型；未配置时回退 qwen-coder-9b）
+            isDefault: m.id === (getStore().get('defaultModelId', 'qwen-coder-9b')),
+            isStartup: m.id === (getStore().get('startupModelId', 'qwen-coder-9b')),
+            mmprojPath,
           })
         } catch { /* modelRegistry may fail if config store not ready yet */ }
-        writeLog(`Registered model: ${m.name} (${p})`)
+        writeLog(`Registered model: ${m.name} (${p})` + (mmprojPath ? ` | mmproj: ${mmprojPath}` : ''))
       }
     }
   } catch (e) { logger.error(`Model registration failed: ${e}`) }
@@ -376,7 +406,7 @@ export async function initializeBackground(options: {
   // ProcessGuardian: SGLang 守护
   try {
     setModuleStatus('sglang-server', 'initializing')
-    const sglangModule = await import('../ipc/sglang.ipc')
+    const sglangModule = sglangModuleNS
     const sp = sglangModule.sglangProcess
     if (sp != null && !sp.killed) {
       processGuardian.register({
@@ -425,7 +455,6 @@ export async function initializeBackground(options: {
           sglangRestartCount++
           logger.warn(`[SGLang] 健康检查失败，尝试重启 (${sglangRestartCount}/${maxSglangRestarts})`)
           try {
-            const { stopSGLang } = await import('../ipc/sglang.ipc')
             await stopSGLang?.()
             const currentModel = modelManager.getLoadedModel()
             if (currentModel) await modelManager.loadModel(currentModel.modelId)
@@ -480,7 +509,7 @@ export function autoLoadDefaultModel(options: {
       }
       if (priorityOrder.length === 0) {
         // 若注册表为空，回退到已知默认模型
-        priorityOrder.push('qwen2-vl-2b', 'qwen3.5-0.8b-behavior')
+        priorityOrder.push('qwen2-vl-2b')
       }
       let targetModel = null
       if (startupModelId) {

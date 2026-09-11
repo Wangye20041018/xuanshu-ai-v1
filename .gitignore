@@ -6,6 +6,20 @@ out/
 __app_pkg__/
 src/renderer/out/
 
+# Build artifacts
+build*.log
+build*.txt
+ev_*.log
+launch_*.txt
+launch_*.log
+dev_*.log
+dev_*.txt
+prod_*.log
+prod_*.txt
+tsc_*.txt
+cac_*.txt
+_*.txt
+
 # IDE
 .vscode/
 .idea/

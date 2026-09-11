@@ -1,4 +1,4 @@
-/**
+﻿/**
  * i18n 国际化框架
  *
  * 基于轻量级 key-value 翻译表，零依赖。
@@ -42,11 +42,11 @@ const zh_CN: TranslationTable = {
     model: '模型',
     memory: '记忆',
     knowledge: '知识',
-    plugins: '智囊团',
     automation: '自动化',
     selfModify: '自我改造',
     agents: '智能体',
-    browser: '浏览器',
+    softwareLibrary: '软件库',
+    scheduler: '模型调度',
     settings: '设置',
     section: {
       features: '功能',
@@ -91,7 +91,6 @@ const zh_CN: TranslationTable = {
   empty: {
     noFiles: '暂无文件',
     noResults: '未找到相关结果',
-    noPlugins: '尚未安装插件',
     noKnowledge: '知识库为空',
     noMemories: '暂无记忆数据',
   },
@@ -136,8 +135,6 @@ const zh_CN: TranslationTable = {
       voiceDesc: '实时语音识别与合成',
       brain: '记忆系统',
       brainDesc: '长期记忆与上下文感知',
-      plugins: '智囊团',
-      pluginsDesc: '内置多领域专家模型',
     },
     codeWindow: {
       code: '代码',
@@ -160,7 +157,6 @@ const zh_CN: TranslationTable = {
     },
     input: {
       attach: '附加文件',
-      voice: '语音输入',
       send: '发送',
       stop: '停止',
     },
@@ -229,11 +225,12 @@ const en_US: TranslationTable = {
     model: 'Model',
     memory: 'Memory',
     knowledge: 'Knowledge',
-    plugins: 'Plugins',
     automation: 'Automation',
     selfModify: 'Self-Modify',
     agents: 'Agents',
     browser: 'Browser',
+    softwareLibrary: 'Software Library',
+    scheduler: 'Model Scheduler',
     settings: 'Settings',
     section: {
       features: 'Features',
@@ -278,7 +275,6 @@ const en_US: TranslationTable = {
   empty: {
     noFiles: 'No files',
     noResults: 'No results found',
-    noPlugins: 'No plugins installed',
     noKnowledge: 'Knowledge base is empty',
     noMemories: 'No memory data',
   },
@@ -323,8 +319,6 @@ const en_US: TranslationTable = {
       voiceDesc: 'Real-time speech recognition & synthesis',
       brain: 'Memory System',
       brainDesc: 'Long-term memory & context awareness',
-      plugins: 'Expert Panel',
-      pluginsDesc: 'Built-in multi-domain expert models',
     },
     codeWindow: {
       code: 'Code',

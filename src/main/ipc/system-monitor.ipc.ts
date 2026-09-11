@@ -169,6 +169,13 @@ function recordInference(inputTokens: number, outputTokens: number, durationMs: 
 // @ts-expect-error TS6133 — retained for future monitoring use
 let prevSnapshot: SystemSnapshot | null = null
 
+/**
+ * 快照历史（内存累积，供“系统监控”图表真实回放）
+ * 上限 120 条：按 2 秒采样可覆盖最近 4 分钟
+ */
+const snapshotHistory: SystemSnapshot[] = []
+const SNAPSHOT_HISTORY_LIMIT = 120
+
 async function captureSnapshot(): Promise<SystemSnapshot> {
   const gpu = await getGpuStats()
   const cpu = await getCpuStats()
@@ -184,6 +191,9 @@ async function captureSnapshot(): Promise<SystemSnapshot> {
     tokens: { ...sessionTokenStats },
   }
 
+  snapshotHistory.push(snap)
+  if (snapshotHistory.length > SNAPSHOT_HISTORY_LIMIT) snapshotHistory.shift()
+
   prevSnapshot = snap
   return snap
 }
@@ -194,6 +204,13 @@ async function captureSnapshot(): Promise<SystemSnapshot> {
 export function setupSystemMonitorHandlers(): void {
   ipcMain.handle('system:snapshot', async () => {
     return captureSnapshot()
+  })
+
+  // 覆盖 system.ipc.ts 中同名空壳：返回真实累积快照历史（渲染层“系统监控”图表数据源）
+  ipcMain.removeHandler('system:snapshots')
+  ipcMain.handle('system:snapshots', (_event, params?: { limit?: number }) => {
+    const limit = Math.min(120, Math.max(1, params?.limit ?? 60))
+    return snapshotHistory.slice(-limit)
   })
 
   ipcMain.handle('system:token:record', (_event, inputTokens: number, outputTokens: number, durationMs: number) => {

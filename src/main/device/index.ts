@@ -27,10 +27,10 @@ interface PerformanceConfig {
 }
 
 interface PerformanceStats {
-  cpu: { usage: number; cores: number }
-  memory: { total: number; used: number; free: number }
-  gpu: { usage: number; memoryUsed: number; memoryTotal: number; name: string }
-  temperature: { cpu: number; gpu: number }
+  cpu: { usage: number | null; cores: number | null }
+  memory: { total: number | null; used: number | null; free: number | null }
+  gpu: { usage: number | null; memoryUsed: number | null; memoryTotal: number | null; name: string | null }
+  temperature: { cpu: number | null; gpu: number | null }
 }
 
 class DeviceOptimizer {
@@ -243,11 +243,12 @@ class DeviceOptimizer {
   }
 
   async getPerformanceStats(): Promise<PerformanceStats> {
+    // F-3 修复：初始值全 null，禁止硬编码"RTX 3060/32G/6144"兜底；查询失败保持 null，UI 显示 "--"
     const stats: PerformanceStats = {
-      cpu: { usage: 0, cores: 8 },
-      memory: { total: 32, used: 16, free: 16 },
-      gpu: { usage: 0, memoryUsed: 0, memoryTotal: 6144, name: 'RTX 3060' },
-      temperature: { cpu: 45, gpu: 40 }
+      cpu: { usage: null, cores: null },
+      memory: { total: null, used: null, free: null },
+      gpu: { usage: null, memoryUsed: null, memoryTotal: null, name: null },
+      temperature: { cpu: null, gpu: null }
     }
 
     try {
@@ -258,8 +259,15 @@ class DeviceOptimizer {
       try {
         const { stdout: cpuOut } = await execAsync(`"${POWERSHELL}" -Command "(Get-Counter \'\\Processor(_Total)\\% Processor Time\').CounterSamples.CookedValue | ForEach-Object { [math]::Round($_) }"`)
         const cpuParts = cpuOut.trim().split('\n')
-        stats.cpu.usage = parseInt(cpuParts[0]) || 0
+        const usage = parseInt(cpuParts[0])
+        if (Number.isFinite(usage)) stats.cpu.usage = usage
       } catch (e) { logger.error(`[Device] CPU stats fetch failed: ${e}`) }
+
+      try {
+        const { stdout: cpuCores } = await execAsync(`"${POWERSHELL}" -Command "(Get-CimInstance Win32_Processor).NumberOfLogicalProcessors"`)
+        const cores = parseInt(cpuCores.trim())
+        if (Number.isFinite(cores) && cores > 0) stats.cpu.cores = cores
+      } catch (e) { logger.error(`[Device] CPU cores fetch failed: ${e}`) }
 
       try {
         const { stdout: memOut } = await execAsync(`"${POWERSHELL}" -Command "& {$os = Get-CimInstance Win32_OperatingSystem; Write-Output (\"TotalVisibleMemorySize=\" + [math]::Round($os.TotalVisibleMemorySize/1024)); Write-Output (\"FreePhysicalMemory=\" + [math]::Round($os.FreePhysicalMemory/1024))}"`)
@@ -267,30 +275,38 @@ class DeviceOptimizer {
         lines.forEach((line: string) => {
           if (line.includes('TotalVisibleMemorySize')) {
             const val = parseInt(line.split('=')[1])
-            stats.memory.total = val ? Math.round(val / 1024) : 32
+            if (val > 0) stats.memory.total = Math.round(val / 1024)
           }
           if (line.includes('FreePhysicalMemory')) {
             const val = parseInt(line.split('=')[1])
-            stats.memory.free = val ? Math.round(val / 1024) : 16
+            if (val > 0) stats.memory.free = Math.round(val / 1024)
           }
         })
-        stats.memory.used = stats.memory.total - stats.memory.free
+        if (stats.memory.total !== null && stats.memory.free !== null) {
+          stats.memory.used = stats.memory.total - stats.memory.free
+        }
       } catch (e) { logger.error(`[Device] memory stats fetch failed: ${e}`) }
 
       try {
         const { stdout: gpuOut } = await execAsync('nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits')
         const [usage, memUsed, memTotal] = gpuOut.trim().split(',').map((s: string) => parseInt(s.trim()))
-        stats.gpu.usage = usage || 0
-        stats.gpu.memoryUsed = memUsed || 0
-        stats.gpu.memoryTotal = memTotal || 6144
+        if (Number.isFinite(usage)) stats.gpu.usage = usage
+        if (Number.isFinite(memUsed)) stats.gpu.memoryUsed = memUsed
+        if (Number.isFinite(memTotal)) stats.gpu.memoryTotal = memTotal
       } catch (e) { logger.error(`[Device] GPU stats fetch failed: ${e}`) }
+
+      try {
+        const { stdout: gpuName } = await execAsync('nvidia-smi --query-gpu=name --format=csv,noheader,nounits')
+        const name = gpuName.trim().split('\n')[0]?.trim()
+        if (name) stats.gpu.name = name
+      } catch (e) { logger.error(`[Device] GPU name fetch failed: ${e}`) }
 
       try {
         const { stdout: tempOut } = await execAsync(`"${POWERSHELL}" -Command "$t = Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue; if($t){($t.CurrentTemperature | Select-Object -First 1)-2732}else{450}"`)
         const tempParts = tempOut.trim().split('\n')
         if (tempParts[0]) {
           const temp = parseInt(tempParts[0])
-          stats.temperature.cpu = temp ? Math.round(temp / 10) : 45
+          if (Number.isFinite(temp) && temp > 0) stats.temperature.cpu = Math.round(temp / 10)
         }
       } catch (e) { logger.error(`[Device] temperature stats fetch failed: ${e}`) }
 
@@ -302,10 +318,10 @@ class DeviceOptimizer {
   async shouldThrottle(): Promise<boolean> {
     const stats = await this.getPerformanceStats()
 
-    const cpuHigh = stats.cpu.usage > 90
-    const memHigh = stats.memory.total > 0 && (stats.memory.used / stats.memory.total) > this.performanceConfig.maxMemoryUsage
-    const gpuHigh = stats.gpu.usage > 95
-    const tempHigh = stats.temperature.cpu > 85 || stats.temperature.gpu > 80
+    const cpuHigh = (stats.cpu.usage ?? 0) > 90
+    const memHigh = (stats.memory.total ?? 0) > 0 && ((stats.memory.used ?? 0) / (stats.memory.total ?? 1)) > this.performanceConfig.maxMemoryUsage
+    const gpuHigh = (stats.gpu.usage ?? 0) > 95
+    const tempHigh = (stats.temperature.cpu ?? 0) > 85 || (stats.temperature.gpu ?? 0) > 80
 
     return cpuHigh || memHigh || gpuHigh || tempHigh
   }

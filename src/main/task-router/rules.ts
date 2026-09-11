@@ -45,10 +45,7 @@ export function classifyIntent(signal: RouteSignal): IntentClass {
 
   const text = (signal.text || signal.audioText || '').toLowerCase()
 
-  // 2) 语音球触发窗口 → 语音闲聊（除非文本命中质量/代码关键词，交由后续判断）
-  const fromVoiceBall = signal.triggerWindow === 'voice-ball'
-
-  // 3) 上传代码文件 → code
+  // 2) 上传代码文件 → code
   if (signal.fileType) {
     const ext = signal.fileType.split('.').pop()?.toLowerCase() || ''
     if (CODE_EXT.includes(ext)) return 'code'
@@ -65,9 +62,6 @@ export function classifyIntent(signal: RouteSignal): IntentClass {
 
   // 7) 质量关键词 → reasoning
   if (QUALITY_KEYWORDS.some((k) => text.includes(k.toLowerCase()))) return 'reasoning'
-
-  // 8) 语音球且未命中上述 → 语音闲聊
-  if (fromVoiceBall) return 'voice'
 
   return 'chat'
 }

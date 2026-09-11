@@ -8,20 +8,19 @@
  * @module ipc/system
  */
 
-import { ipcMain, BrowserWindow, app, shell } from 'electron'
+import { ipcMain, BrowserWindow, app, shell, dialog, net } from 'electron'
 import { logger } from '../../shared/logger'
 import { join } from 'path'
 import { ensureDirSync, writeFileSync } from 'fs-extra'
+import fs from 'fs'
 
 /* ============================================================
  * System Handlers
  * ============================================================ */
 
 export function setupSystemHandlers(): void {
-  ipcMain.handle('system:snapshots', async (_event, _params?: { limit?: number }) => {
-    logger.debug('[System] system:snapshots queried')
-    return []
-  })
+  // 注：system:snapshots 真实实现已移至 system-monitor.ipc.ts（累积快照历史），
+  // 此处不再注册空壳，避免与真实 handler 冲突。
 
   // 全屏/主窗口截图：保存到 userData/screenshots 并返回路径（语音命令 system:screenshot 通道）
   ipcMain.handle('system:screenshot', async (_event) => {
@@ -43,59 +42,19 @@ export function setupSystemHandlers(): void {
 }
 
 /* ============================================================
- * Voice Wake — 语音唤醒
- * ============================================================ */
-
-export function setupVoiceWakeHandlers(): void {
-  ipcMain.handle('voice-wake:status', async () => {
-    return { status: 'active', available: true, message: 'Voice wake service is running via voiceWakeService' }
-  })
-  ipcMain.handle('voice-wake:configure', async (_event, config: Record<string, unknown>) => {
-    return { success: true, message: `Wake word configured: ${config?.wakeWord ?? 'default'}`, config }
-  })
-}
-
-/* ============================================================
- * Internet Search — 联网搜索
- * ============================================================ */
-
-export function setupInternetSearchHandlers(): void {
-  ipcMain.handle('internet-search:status', async () => {
-    return { status: 'active', message: 'Internet search module is initialized' }
-  })
-  ipcMain.handle('internet-search:search', async (_event, params: { query: string }) => {
-    return { success: true, query: params?.query, results: [], message: 'Search invoked' }
-  })
-}
-
-/* ============================================================
- * Dynamic Operation Engine — 动态操作引擎（真实 handler 见 ../dynamic-operation）
+ * 壳 handler 清理（设置页清理专项）
+ * 移除假实现：voice-wake:* / internet-search:* / device-optimizer:*
+ * / voice-engine:* / personalization:* 旧壳通道。
+ * 真实通道由各自模块注册：
+ *   - 联网搜索 → src/main/search（search:*）
+ *   - 设备优化 → src/main/device（device:*）
+ *   - 语音播报 → src/main/voice-engine（tts:speak / voice:speak）
+ *   - 个性化   → src/main/personalization（personalization:get-*）
+ * 注：语音唤醒（wake）、声纹（voiceprint）、ASR 已随 §6.1 移除，不做降级。
  * ============================================================ */
 
 /* ============================================================
- * Device Optimizer — 设备优化
- * 注：device-optimizer 自注册 IPC handlers
- * ============================================================ */
-
-export function setupDeviceOptimizerHandlers(): void {
-  ipcMain.handle('device-optimizer:status', async () => {
-    return { status: 'active', message: 'Device optimizer handles its own IPC' }
-  })
-}
-
-/* ============================================================
- * Voice Engine — 语音引擎
- * 注：voice-engine 已自注册 IPC handlers
- * ============================================================ */
-
-export function setupVoiceEngineHandlers(): void {
-  ipcMain.handle('voice-engine:status', async () => {
-    return { status: 'active', message: 'Voice engine handles its own IPC channels' }
-  })
-}
-
-/* ============================================================
- * Personalization — 个性化服务
+ * Personalization — 个性化服务（真实实现见 ../personalization）
  * ============================================================ */
 
 export function setupPersonalizationHandlers(): void {
@@ -215,7 +174,7 @@ export function setupAutomationHandlers(): void {
  * ============================================================ */
 
 /* ============================================================
- * Voiceprint Manager — 声纹管理（真实实现见 ../ipc/voiceprint.ipc，勿在此重复注册）
+ * Voiceprint Manager — 已随 §6.1 移除（声纹/语音输入不做降级）
  * ============================================================ */
 
 /* ============================================================
@@ -274,6 +233,33 @@ export function setupMissingHandlers(): void {
       return { success: true }
     } catch (err) {
       logger.warn(`[Compat] window:open-settings 失败: ${err}`)
+      return { success: false, error: String(err) }
+    }
+  })
+
+  // app:save-file — 将本地文件复制或远程 URL 下载到用户指定位置（富媒体回复“保存”能力）
+  ipcMain.handle('app:save-file', async (event, params: { source: string; defaultName?: string }) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const source = params?.source || ''
+    if (!source) return { success: false, error: '缺少文件来源' }
+    const fallback = source.split(/[\\/]/).pop() || 'file'
+    const defaultName = (params?.defaultName || fallback).replace(/[\\/:*?"<>|]/g, '_')
+    const { canceled, filePath } = await dialog.showSaveDialog(win ?? undefined!, {
+      title: '保存文件',
+      defaultPath: defaultName,
+    })
+    if (canceled || !filePath) return { success: false, canceled: true }
+    try {
+      if (/^https?:\/\//i.test(source)) {
+        const res = await net.fetch(source)
+        if (!res.ok) return { success: false, error: `下载失败: HTTP ${res.status}` }
+        writeFileSync(filePath, Buffer.from(await res.arrayBuffer()))
+      } else {
+        fs.copyFileSync(source, filePath)
+      }
+      return { success: true, filePath }
+    } catch (err) {
+      logger.warn(`[Compat] app:save-file 失败: ${err}`)
       return { success: false, error: String(err) }
     }
   })

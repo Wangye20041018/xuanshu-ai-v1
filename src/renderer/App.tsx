@@ -12,21 +12,19 @@ import { SkipLink } from './components/a11y'
 import ControlOverlay from './components/ControlOverlay'
 import { useTranslation } from './i18n'
 import { logger } from '../shared/logger'
-import { applyThemeOnBoot } from './theme'
+import { applyAppearanceOnBoot } from './theme'
 
 // 首屏立即加载（Home），其余路由组件按需懒加载
 import Home from './pages/Home'
 
-const Voice = lazy(() => import('./pages/Voice'))
 const Model = lazy(() => import('./pages/Model'))
 const Memory = lazy(() => import('./pages/Memory'))
 const Knowledge = lazy(() => import('./pages/Knowledge'))
-const Plugins = lazy(() => import('./pages/Plugins'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Automation = lazy(() => import('./pages/Automation'))
 const SelfModify = lazy(() => import('./pages/SelfModify'))
 const Agents = lazy(() => import('./pages/Agents'))
-const Browser = lazy(() => import('./pages/Browser'))
+const SoftwareLibrary = lazy(() => import('./pages/SoftwareLibrary'))
 
 /** 模块状态快照 */
 interface ModuleStatus {
@@ -48,6 +46,64 @@ function RouteFallback() {
   return <LoadingSkeleton variant="page" lines={4} />
 }
 
+/* ============================================================
+ * 全局 TTS 主动播报播放器
+ * 监听主进程 VoiceEngine 广播（tts:speak/stop/pause/resume），
+ * 修复主动播报（语音讨论 / 退出确认 / 语音命令反馈）渲染端无人监听导致无声的问题。
+ * 收到 tts:speak 后播放 audioPath；失败时降级浏览器语音播报文字。
+ * ============================================================ */
+function GlobalTtsPlayer() {
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  useEffect(() => {
+    const win = window as any
+    if (!win.api?.onTtsEvent) return
+
+    const stopAudio = () => {
+      const a = audioRef.current
+      if (a) { try { a.pause(); a.currentTime = 0 } catch { /* ignore */ } }
+      try { window.speechSynthesis?.cancel() } catch { /* ignore */ }
+    }
+
+    const playAudio = async (data: any) => {
+      if (!data || typeof data !== 'object' || !data.audioPath) return
+      stopAudio()
+      const a = audioRef.current || new Audio()
+      audioRef.current = a
+      a.src = `local-file://${data.audioPath.replace(/\\/g, '/')}`
+      a.onerror = () => {
+        // 音频文件缺失/损坏时降级浏览器语音，避免静默
+        if (data.text && window.speechSynthesis) {
+          try {
+            const u = new SpeechSynthesisUtterance(String(data.text))
+            u.lang = 'zh-CN'
+            window.speechSynthesis.speak(u)
+          } catch { /* ignore */ }
+        }
+      }
+      try { await a.play() } catch { /* 自动播放被拦截时静默 */ }
+    }
+
+    const unsubscribe = win.api.onTtsEvent((event: string, data?: unknown) => {
+      if (event === 'speak') {
+        playAudio(data as any)
+      } else if (event === 'stop') {
+        stopAudio()
+      } else if (event === 'pause') {
+        try { audioRef.current?.pause() } catch { /* ignore */ }
+        try { window.speechSynthesis?.pause() } catch { /* ignore */ }
+      } else if (event === 'resume') {
+        try { audioRef.current?.play() } catch { /* ignore */ }
+        try { window.speechSynthesis?.resume() } catch { /* ignore */ }
+      }
+    })
+
+    return unsubscribe
+  }, [])
+
+  return null
+}
+
 function App() {
   const { t } = useTranslation()
   const location = useLocation()
@@ -58,9 +114,9 @@ function App() {
   const frameTimestamps = useRef<number[]>([])
   const lastReportTs = useRef<number>(0)
 
-  // 启动即恢复已保存的主题色，避免重启后 --brand 系列 CSS 变量回退默认
+  // 启动即恢复已保存的主题色与外观配置（主题重组 + UI 重组），避免重启后回退默认
   useEffect(() => {
-    applyThemeOnBoot()
+    applyAppearanceOnBoot()
   }, [])
 
   // 监听 app:ready IPC 事件，控制骨架屏切换
@@ -382,16 +438,14 @@ function App() {
                   <Suspense fallback={<RouteFallback />}>
                     <Routes location={location}>
                       <Route path="/" element={<Home />} />
-                      <Route path="/voice" element={<Voice />} />
                       <Route path="/model" element={<Model />} />
                       <Route path="/memory" element={<Memory />} />
                       <Route path="/knowledge" element={<Knowledge />} />
-                      <Route path="/plugins" element={<Plugins />} />
                       <Route path="/settings" element={<Settings />} />
                       <Route path="/automation" element={<Automation />} />
                       <Route path="/self-modify" element={<SelfModify />} />
                       <Route path="/agents" element={<Agents />} />
-                      <Route path="/browser" element={<Browser />} />
+                      <Route path="/software" element={<SoftwareLibrary />} />
                     </Routes>
                   </Suspense>
                 </motion.div>
@@ -403,6 +457,7 @@ function App() {
       <ControlOverlay />
       <ToastContainer />
       <Onboarding />
+      <GlobalTtsPlayer />
     </ErrorBoundary>
   )
 }

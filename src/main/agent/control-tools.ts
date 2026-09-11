@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * 控制电脑细粒度工具 — 把 visual-agent 的裸通道封装为 ReAct 工具
  *
  * 工具清单（均标 dangerous，执行前走人工确认门 / 白名单闸）：
@@ -15,6 +15,9 @@
 import { toolRegistry } from './tool-registry'
 import { logger } from '../../shared/logger'
 import { notifyControlStart, notifyControlFinish } from '../control-state'
+import { visualAgent } from '../visual-agent'
+import { interactionExecutor } from '../visual-agent/interaction-executor'
+import { screenObserver } from '../visual-agent/screen-observer'
 
 /**
  * 控制动作确认门（三级闸门 ① 白名单 + ② 确认门）。
@@ -40,7 +43,6 @@ async function confirmControl(
   } catch (e) {
     logger.warn(`[ControlTools] 白名单确认门异常，回退旧确认门: ${e instanceof Error ? e.message : String(e)}`)
     try {
-      const { visualAgent } = await import('../visual-agent')
       return await visualAgent.confirmSingleAction(label, detail)
     } catch {
       return false
@@ -91,7 +93,6 @@ export function registerControlTools(): void {
         return { success: false, error: '坐标参数非法' }
       }
       return withControl(`点击坐标 (${x}, ${y})`, async () => {
-        const { interactionExecutor } = await import('../visual-agent/interaction-executor')
         const ok = await interactionExecutor.clickAt(x, y)
         return ok ? { x, y } : { x, y, failed: true }
       })
@@ -120,7 +121,6 @@ export function registerControlTools(): void {
         return { success: false, error: '坐标参数非法' }
       }
       return withControl(`双击坐标 (${x}, ${y})`, async () => {
-        const { interactionExecutor } = await import('../visual-agent/interaction-executor')
         const ok = await interactionExecutor.doubleClickAt(x, y)
         return ok ? { x, y } : { x, y, failed: true }
       })
@@ -149,7 +149,6 @@ export function registerControlTools(): void {
         return { success: false, error: '坐标参数非法' }
       }
       return withControl(`右键点击坐标 (${x}, ${y})`, async () => {
-        const { interactionExecutor } = await import('../visual-agent/interaction-executor')
         const ok = await interactionExecutor.rightClickAt(x, y)
         return ok ? { x, y } : { x, y, failed: true }
       })
@@ -174,7 +173,6 @@ export function registerControlTools(): void {
       const text = String(p.text || '')
       if (!text) return { success: false, error: '文本不能为空' }
       return withControl(`输入文本（${text.length} 字符）`, async () => {
-        const { interactionExecutor } = await import('../visual-agent/interaction-executor')
         const ok = await interactionExecutor.typeText(text)
         return ok ? { length: text.length } : { length: text.length, failed: true }
       })
@@ -199,7 +197,6 @@ export function registerControlTools(): void {
       const keys = String(p.keys || '')
       if (!keys) return { success: false, error: '按键不能为空' }
       return withControl(`发送按键 ${keys}`, async () => {
-        const { interactionExecutor } = await import('../visual-agent/interaction-executor')
         const ok = await interactionExecutor.pressKeys(keys)
         return ok ? { keys } : { keys, failed: true }
       })
@@ -232,7 +229,6 @@ export function registerControlTools(): void {
         return { success: false, error: '坐标参数非法' }
       }
       return withControl(`拖拽 (${fromX}, ${fromY}) → (${toX}, ${toY})`, async () => {
-        const { interactionExecutor } = await import('../visual-agent/interaction-executor')
         const ok = await interactionExecutor.drag({ x: fromX, y: fromY }, { x: toX, y: toY })
         return ok ? { fromX, fromY, toX, toY } : { fromX, fromY, toX, toY, failed: true }
       })
@@ -263,7 +259,6 @@ export function registerControlTools(): void {
         return { success: false, error: '参数非法' }
       }
       return withControl(`滚动 (${x}, ${y}) 增量 ${delta}`, async () => {
-        const { interactionExecutor } = await import('../visual-agent/interaction-executor')
         const ok = await interactionExecutor.scrollAt(x, y, delta)
         return ok ? { x, y, delta } : { x, y, delta, failed: true }
       })
@@ -279,7 +274,6 @@ export function registerControlTools(): void {
     parameters: { type: 'object', properties: {}, required: [] },
     execute: async () => {
       return withControl('截取屏幕', async () => {
-        const { screenObserver } = await import('../visual-agent/screen-observer')
         const shot = await screenObserver.captureFullScreen()
         return { width: shot.width, height: shot.height, timestamp: shot.timestamp, source: shot.source }
       })

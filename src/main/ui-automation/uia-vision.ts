@@ -12,7 +12,6 @@
 
 import { createLogger } from '../utils/logging'
 import { POWERSHELL_EXE } from '../utils/powershell'
-import {UIAScanner} from './uia-scanner'
 
 const logger = createLogger('UIA:Vision')
 
@@ -572,45 +571,5 @@ export class VisionQualityInspector {
         afterScreenshot: after
       }
     }
-  }
-}
-
-// ============================================================
-// 向后兼容：保留旧版 UIAVision 别名（过渡期）
-// ============================================================
-
-/**
- * @deprecated 旧版 UIAVision，请使用 VisionFallback + VisionQualityInspector
- * 保留此别名以避免破坏现有引用，功能已拆分为两个独立类。
- */
-export class UIAVision {
-  // @ts-expect-error TS6133 - screenshotPath reserved for future use
-  static async analyzeAndMap(screenshotPath?: string) {
-    logger.warn('[UIAVision.analyzeAndMap] DEPRECATED — use VisionFallback.locateByVision')
-    // 降级：返回空结果
-    const tree = UIAScanner.scanWindow()
-    return {
-      elements: [] as any[],
-      uiaTree: tree,
-      windowTitle: tree.name || 'Current Window',
-      elapsedMs: 0
-    }
-  }
-
-  static async executeByVision(instruction: string) {
-    logger.warn('[UIAVision.executeByVision] DEPRECATED — use VisionFallback.clickByVision')
-    const result = await VisionFallback.clickByVision(instruction)
-    return {
-      success: result.success,
-      instruction,
-      matchedElement: null,
-      operationResult: result,
-      steps: [result.success ? 'Vision fallback click succeeded' : `Failed: ${result.error}`],
-      elapsedMs: 0
-    }
-  }
-
-  static isAvailable(): boolean {
-    return VisionFallback.isAvailable()
   }
 }

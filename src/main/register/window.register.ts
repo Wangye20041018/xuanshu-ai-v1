@@ -287,7 +287,9 @@ export function createWindow(): BrowserWindow {
 
   win.on('closed', () => {
     try {
-      win.webContents.removeAllListeners('crashed')
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.removeAllListeners('crashed')
+      }
     } catch (e) {
       logger.error(`[Window] removeListener failed: ${e}`)
     }

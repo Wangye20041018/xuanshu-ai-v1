@@ -16,6 +16,8 @@
 
 import { logger } from '../../shared/logger'
 import { buildDefaultDefinition, generateAgentId } from './agent-store'
+import { personaLoader } from '../persona-loader'
+import { modelManager } from '../model-manager'
 import type {
   AgentCreatePreview,
   AgentDefinition,
@@ -49,7 +51,6 @@ async function listToolOptions(): Promise<Array<{ name: string; description: str
 /** 获取可用人设清单 */
 async function listPersonaOptions(): Promise<Array<{ id: string; name: string; description: string }>> {
   try {
-    const { personaLoader } = await import('../persona-loader')
     return personaLoader.listPersonas().map((p) => ({
       id: p.id,
       name: p.name,
@@ -110,7 +111,6 @@ function tryParseAgentConfig(text: string): AgentFillFields | undefined {
 
 /** 调模型生成一次（返回原始文本） */
 async function generateOnce(prompt: string): Promise<string> {
-  const { modelManager } = await import('../model-manager')
   const resp = await modelManager.generateResponse(prompt, { temperature: 0.4, maxTokens: 512 })
   return typeof resp === 'string' ? resp : (resp as { content?: string })?.content || String(resp)
 }

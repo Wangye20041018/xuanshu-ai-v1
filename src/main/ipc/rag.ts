@@ -31,7 +31,7 @@ export function setupRAGHandlers(): void {
   ipcMain.handle('rag:search', async (_event, params: {
     embedding: number[]
     topK?: number
-    type?: 'conversation' | 'preference' | 'fact' | 'knowledge'
+    type?: 'conversation' | 'preference' | 'fact' | 'knowledge' | 'experience'
   }) => {
     try {
       if (!params?.embedding || !Array.isArray(params.embedding) || params.embedding.length === 0) {
@@ -55,7 +55,7 @@ export function setupRAGHandlers(): void {
     text: string
     embedding: number[]
     metadata: {
-      type: 'conversation' | 'preference' | 'fact' | 'knowledge'
+      type: 'conversation' | 'preference' | 'fact' | 'knowledge' | 'experience'
       tags?: string[]
       timestamp?: number
       source?: string

@@ -27,6 +27,8 @@ declare global {
       onTtsEvent: (callback: (event: string, data?: unknown) => void) => () => void
       SpeechRecognition?: typeof SpeechRecognition
       webkitSpeechRecognition?: typeof SpeechRecognition
+      // Electron 32 起 File.path 已移除，取真实路径须经 preload 暴露的 webUtils.getPathForFile
+      getPathForFile: (file: File) => string
     }
   }
 }

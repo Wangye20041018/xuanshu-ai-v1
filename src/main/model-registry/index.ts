@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * ModelRegistry — 模型长效注册表 v1.0
  *
  * 核心能力：
@@ -13,6 +13,9 @@ import { existsSync } from 'fs'
 import { logger } from '../../shared/logger'
 import { getStore } from '../ipc/config.ipc'
 import { analyzeModelFile } from '../utils/model-analyzer'
+import { tandemManager } from '../tandem-manager'
+import { modelManager } from '../model-manager'
+import { getHardware, resolveModelRuntime, type ModelRunLocation } from '../runtime/hardware'
 
 /* ============================================================
  * 类型定义
@@ -31,6 +34,8 @@ export interface RegisteredModel {
   gpuLayers: number
   /** 运行模式：GPU 或 CPU */
   mode: 'gpu' | 'cpu'
+  /** 运行位置（用户显式设置）：auto 自动 / cpu 纯CPU / gpu 纯GPU / layered 分层 */
+  runLocation?: ModelRunLocation
   /** 上下文大小 */
   contextSize: number
   /** 推理参数 */
@@ -75,6 +80,11 @@ class ModelRegistry {
     return store
   }
 
+  /** 大修：模型页精简后不再支持的模型 ID（旧配置持久化数据惰性清理）
+   *  - qwen3.5-9b / qwopus-18b：主力模型重排后移除（由 qwen-coder-9b / deepseek-math-9b 取代）
+   */
+  private readonly REMOVED_MODEL_IDS = new Set(['qwen2-vl-7b', 'qwen3.5-0.8b-behavior', 'qwen3.5-9b', 'qwopus-18b'])
+
   /** 获取所有注册模型（带内存缓存） */
   list(): RegisteredModel[] {
     try {
@@ -83,7 +93,14 @@ class ModelRegistry {
         return this.cache
       }
       const store = this.getStore()
-      const models = store.get(CONFIG_KEY, []) as RegisteredModel[]
+      let models = store.get(CONFIG_KEY, []) as RegisteredModel[]
+      // 惰性迁移：移除已下架模型的旧注册条目，避免出现在模型页
+      const removed = models.filter(m => this.REMOVED_MODEL_IDS.has(m.id))
+      if (removed.length > 0) {
+        logger.warn(`[ModelRegistry] 清理已下架模型注册条目: ${removed.map(m => m.id).join(', ')}`)
+        models = models.filter(m => !this.REMOVED_MODEL_IDS.has(m.id))
+        this.save(models)
+      }
       this.cache = models
       this.cacheTimestamp = now
       return models
@@ -102,9 +119,17 @@ class ModelRegistry {
     logger.info(`[ModelRegistry] 已保存 ${models.length} 个模型`)
   }
 
-  /** 注册新模型（自动分配端口） */
-  add(model: Omit<RegisteredModel, 'registeredAt' | 'port' | 'isDefault' | 'isStartup'> & { isDefault?: boolean; isStartup?: boolean; port?: number }): { success: boolean; model?: RegisteredModel; error?: string } {
+  /** 注册新模型（自动分配端口）
+   *  - 幂等：同 modelPath 视为同一模型，执行 upsert 更新字段
+   *  - 文件存在性校验：modelPath 不存在则拒绝注册（返回明确错误），避免注册"空壳"模型
+   */
+  add(model: Omit<RegisteredModel, 'registeredAt' | 'port' | 'isDefault' | 'isStartup'> & { isDefault?: boolean; isStartup?: boolean; port?: number }, opts?: { allowMissing?: boolean }): { success: boolean; model?: RegisteredModel; error?: string } {
     try {
+      // 文件存在性校验（幂等 upsert 同样校验，防止旧配置指向已删除文件）
+      if (!opts?.allowMissing && model.modelPath && !existsSync(model.modelPath)) {
+        return { success: false, error: `模型文件不存在，无法注册: ${model.modelPath}（请先下载 GGUF 文件）` }
+      }
+
       const models = this.list()
 
       // 检查重复（同路径视为同一模型）→ upsert：更新字段，避免旧配置（如 gpuLayers=0）残留
@@ -169,7 +194,7 @@ class ModelRegistry {
    */
   updateRuntime(
     id: string,
-    patch: Partial<Pick<RegisteredModel, 'gpuLayers' | 'contextSize' | 'mode' | 'temperature' | 'maxTokens'>>,
+    patch: Partial<Pick<RegisteredModel, 'gpuLayers' | 'contextSize' | 'mode' | 'temperature' | 'maxTokens' | 'runLocation'>>,
   ): { success: boolean; model?: RegisteredModel; error?: string } {
     try {
       const models = this.list()
@@ -180,10 +205,42 @@ class ModelRegistry {
       const merged: RegisteredModel = { ...models[idx], ...patch }
       models[idx] = merged
       this.save(models)
-      logger.info(`[ModelRegistry] 更新推理参数: ${merged.name} (mode=${merged.mode}, gpuLayers=${merged.gpuLayers}, contextSize=${merged.contextSize})`)
+      logger.info(`[ModelRegistry] 更新推理参数: ${merged.name} (runLocation=${merged.runLocation ?? 'auto'}, mode=${merged.mode}, gpuLayers=${merged.gpuLayers}, contextSize=${merged.contextSize})`)
       return { success: true, model: merged }
     } catch (e: any) {
       logger.error('[ModelRegistry] updateRuntime 失败:', e)
+      return { success: false, error: e.message }
+    }
+  }
+
+  /** v12.3 绑定/更换/解绑视觉投影层（mmproj）
+   *  - 绑定 mmproj 后强制 isMultimodal=true；解绑时视觉类型保留多模态标记，主/嵌入类型复位
+   */
+  setMmproj(
+    id: string,
+    mmprojPath?: string,
+  ): { success: boolean; model?: RegisteredModel; error?: string } {
+    try {
+      const models = this.list()
+      const idx = models.findIndex(m => m.id === id)
+      if (idx < 0) {
+        return { success: false, error: `模型 ${id} 未注册` }
+      }
+      if (mmprojPath && !existsSync(mmprojPath)) {
+        return { success: false, error: `投影层文件不存在: ${mmprojPath}（请先确认 mmproj*.gguf 路径正确）` }
+      }
+      const merged: RegisteredModel = { ...models[idx], mmprojPath: mmprojPath ?? undefined }
+      if (mmprojPath) {
+        merged.isMultimodal = true
+      } else if (merged.type !== 'vision') {
+        merged.isMultimodal = false
+      }
+      models[idx] = merged
+      this.save(models)
+      logger.info(`[ModelRegistry] 更新投影层: ${merged.name} -> ${mmprojPath || '(未绑定)'} (isMultimodal=${merged.isMultimodal})`)
+      return { success: true, model: merged }
+    } catch (e: any) {
+      logger.error('[ModelRegistry] setMmproj 失败:', e)
       return { success: false, error: e.message }
     }
   }
@@ -332,7 +389,6 @@ export function setupModelRegistryHandlers(): void {
       // 联动清理运行引擎（体验闭环：删除已接入模型时，同步卸载当前加载/运行中的服务与进程）
       let wasInUse = false
       try {
-        const { tandemManager } = await import('../tandem-manager')
         const states = tandemManager.getServerStates() || []
         if (states.some((s: any) => s.modelId === id)) {
           wasInUse = true
@@ -342,7 +398,6 @@ export function setupModelRegistryHandlers(): void {
         logger.warn(`[ModelRegistry] remove 联动停止 tandem 服务失败: ${(e as Error)?.message ?? String(e)}`)
       }
       try {
-        const { modelManager } = await import('../model-manager')
         const loaded = modelManager.getLoadedModel?.()
         if (loaded?.modelId === id) {
           wasInUse = true
@@ -389,19 +444,44 @@ export function setupModelRegistryHandlers(): void {
     return modelRegistry.updateRuntime(id, patch)
   })
 
-  /* ---- A-4: 重启指定模型使新推理参数生效 ---- */
+  /* ---- v12.3: 绑定/更换/解绑视觉投影层（mmproj） ---- */
+  ipcMain.handle('model-registry:set-mmproj', async (_e, payload: { id: string; mmprojPath?: string }) => {
+    return modelRegistry.setMmproj(payload?.id, payload?.mmprojPath)
+  })
+
+  /* ---- A-4: 重启指定模型使新推理参数生效 ----
+   * 运行位置直通：按 RegisteredModel.runLocation 经 resolveModelRuntime 计算最终
+   * gpuLayers/contextSize/mode（显式指定不被显存自动缩放覆盖），再启动 llama-server。
+   */
   ipcMain.handle('model-registry:restart-model', async (_e, id: string) => {
     try {
       const model = modelRegistry.list().find(m => m.id === id)
       if (!model) {
         return { success: false, error: `模型 ${id} 未注册` }
       }
-      const { tandemManager } = await import('../tandem-manager')
+      const hw = await getHardware()
+      const rt = resolveModelRuntime(
+        { ...model, runLocation: model.runLocation, contextSize: model.contextSize },
+        hw,
+      )
+      const cfg: any = {
+        id: model.id,
+        name: model.name,
+        modelPath: model.modelPath,
+        port: model.port,
+        gpuLayers: rt.gpuLayers,
+        contextSize: rt.contextSize || model.contextSize || 2048,
+        mode: rt.targetDevice === 'gpu' ? 'gpu' : 'cpu',
+        temperature: model.temperature,
+        maxTokens: model.maxTokens,
+        mmprojPath: model.mmprojPath,
+      }
       await tandemManager.stopServer(id)
-      await tandemManager.startServer(model as any)
+      await tandemManager.startServer(cfg)
       const states = tandemManager.getServerStates()
       const state = states.find(s => s.modelId === id)
-      return { success: true, port: state?.port, status: state?.status ?? 'started' }
+      logger.info(`[ModelRegistry] 重启模型 ${model.name}: runLocation=${model.runLocation ?? 'auto'} → ${cfg.mode} gpuLayers=${cfg.gpuLayers} ctx=${cfg.contextSize}`)
+      return { success: true, port: state?.port, status: state?.status ?? 'started', cfg }
     } catch (e: any) {
       return { success: false, error: e.message }
     }
@@ -411,9 +491,7 @@ export function setupModelRegistryHandlers(): void {
   ipcMain.handle('model-registry:runtime-status', async () => {
     try {
       const registryModels = modelRegistry.list()
-      const { tandemManager } = await import('../tandem-manager')
       const states = tandemManager.getServerStates()
-      const { modelManager } = await import('../model-manager')
       let gpu: any = null
       try {
         gpu = await modelManager.getMemoryUsage?.() ?? null
@@ -433,11 +511,10 @@ export function setupModelRegistryHandlers(): void {
   ipcMain.handle('model:health', async () => {
     // 1) API Provider 已配置可用时视为就绪（对话走云端 API，无需本地模型）
     try {
-      const { getStore } = await import('../ipc/config.ipc')
       const store = getStore()
       const providers: any[] = store.get('providers') || []
       const activeProviderId: string = store.get('activeProvider') || ''
-      const isApiProvider = activeProviderId && activeProviderId !== '__local_cpu__' && activeProviderId !== '__local_sglang__'
+      const isApiProvider = activeProviderId && activeProviderId !== '__local_cpu__' && activeProviderId !== '__local_sglang__' && activeProviderId !== '__local_tandem__'
       if (isApiProvider) {
         const activeProvider = providers.find((p: any) => p.id === activeProviderId)
         if (activeProvider && activeProvider.apiKey) {
@@ -465,7 +542,6 @@ export function setupModelRegistryHandlers(): void {
     try {
       // 优先检查 tandem 引擎（v12 双模型调度下主模型由 tandem 拉起，modelManager 未记录）
       try {
-        const { tandemManager } = await import('../tandem-manager')
         const states = tandemManager.getServerStates()
         const tandemModel = states.find((s: any) => s.modelId === defaultModel.id && s.status === 'running')
         if (tandemModel) {
@@ -479,7 +555,6 @@ export function setupModelRegistryHandlers(): void {
         }
       } catch { /* tandem 不可用则回退 modelManager 检查 */ }
 
-      const { modelManager } = await import('../model-manager')
       const isLoaded = modelManager.isModelLoaded(defaultModel.id)
       return {
         healthy: isLoaded,

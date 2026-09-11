@@ -12,7 +12,7 @@ function createDebouncedStorage(base: Storage, delayMs = 1000): StateStorage & {
   const storage: StateStorage & { flush: () => void } = {
     getItem(name) {
       // 读取时优先返回待写入的最新值
-      return pending.get(name) ?? base.getItem(name)
+      return Promise.resolve(pending.get(name) ?? base.getItem(name))
     },
     setItem(name, value) {
       pending.set(name, value)
@@ -100,7 +100,22 @@ interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  /** M-3 修复：推理过程（reasoning_content）独立存储，UI 折叠展示 */
+  reasoning?: string
   timestamp: number
+  /** A批7：生成统计（真实可算，非 mock）。tokenEstimate 为按字符数估算（UI 标注「约」），elapsedMs 为前端真实计时 */
+  tokenEstimate?: number
+  elapsedMs?: number
+  charCount?: number
+  /** F批：附件（图片/文件）由文本标记升级为真实内容数组附件，前端缩略渲染 + 发送时构造 multi-part parts */
+  files?: Array<{ path: string; type: string; name?: string }>
+}
+
+/** 流式结束后由前端计算并写入的单条消息生成统计 */
+export interface MessageMeta {
+  tokenEstimate?: number
+  elapsedMs?: number
+  charCount?: number
 }
 
 interface ContextStatsState {
@@ -133,7 +148,8 @@ interface ChatState {
   conversations: Conversation[]
 
   addMessage: (message: ChatMessage) => void
-  updateMessage: (id: string, content: string, conversationId?: string) => void
+  updateMessage: (id: string, content: string, conversationId?: string, reasoning?: string) => void
+  updateMessageMeta: (id: string, meta: MessageMeta, conversationId?: string) => void
   setLoading: (loading: boolean) => void
   setStreaming: (streaming: boolean) => void
   clearMessages: () => void
@@ -175,23 +191,42 @@ export const useChatStore = create<ChatState>()(
           return { messages: newMessages, conversations }
         }),
 
-      updateMessage: (id, content, conversationId?) =>
+      updateMessage: (id, content, conversationId?, reasoning?) =>
         set((state) => {
           const targetId = conversationId ?? state.currentConversationId
           // 流式回复可能发生在会话切换后：按目标会话写入，避免切走后内容丢失或错位
           if (targetId && targetId !== state.currentConversationId) {
             const conversations = state.conversations.map(c =>
               c.id === targetId
-                ? { ...c, messages: c.messages.map((m) => (m.id === id ? { ...m, content } : m)), updatedAt: Date.now() }
+                ? { ...c, messages: c.messages.map((m) => (m.id === id ? { ...m, content, ...(reasoning !== undefined ? { reasoning } : {}) } : m)), updatedAt: Date.now() }
                 : c
             )
             return { conversations }
           }
           const newMessages = state.messages.map((m) =>
-            m.id === id ? { ...m, content } : m
+            m.id === id ? { ...m, content, ...(reasoning !== undefined ? { reasoning } : {}) } : m
           )
           const conversations = state.conversations.map(c =>
             c.id === state.currentConversationId ? { ...c, messages: newMessages, updatedAt: Date.now() } : c
+          )
+          return { messages: newMessages, conversations }
+        }),
+
+      updateMessageMeta: (id, meta, conversationId?) =>
+        set((state) => {
+          const targetId = conversationId ?? state.currentConversationId
+          // 生成统计（token/耗时）同样按目标会话路由，与 updateMessage 逻辑保持一致
+          if (targetId && targetId !== state.currentConversationId) {
+            const conversations = state.conversations.map(c =>
+              c.id === targetId
+                ? { ...c, messages: c.messages.map((m) => (m.id === id ? { ...m, ...meta } : m)) }
+                : c
+            )
+            return { conversations }
+          }
+          const newMessages = state.messages.map((m) => (m.id === id ? { ...m, ...meta } : m))
+          const conversations = state.conversations.map(c =>
+            c.id === state.currentConversationId ? { ...c, messages: newMessages } : c
           )
           return { messages: newMessages, conversations }
         }),

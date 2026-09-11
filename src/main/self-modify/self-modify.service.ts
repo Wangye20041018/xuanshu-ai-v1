@@ -17,6 +17,7 @@ import fs from 'fs'
 import path from 'path'
 import { execFile, execFileSync } from 'child_process'
 import { createLogger } from '../utils/logging'
+import { modelManager } from '../model-manager'
 import {
   isAllowed,
   isReadable,
@@ -401,7 +402,7 @@ export class SelfModifyService {
    * ============================================================ */
   async generate(requirement: string): Promise<GenerateResult> {
     try {
-      const mod: { modelManager: any } = await import('../model-manager')
+      const mod: { modelManager: any } = { modelManager }
       const prompt = buildGeneratePrompt(requirement)
       const response: any = await mod.modelManager.generateResponse(prompt, { temperature: 0.4, maxTokens: 2048 })
       const text: string = typeof response === 'string' ? response : response?.content || response?.text || ''

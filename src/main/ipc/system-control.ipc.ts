@@ -4,6 +4,10 @@ import { promisify } from 'util'
 import { POWERSHELL_EXE } from '../utils/powershell'
 import { logger } from '../../shared/logger'
 import { notifyControlStart, notifyControlFinish } from '../control-state'
+import * as visualAgentModule from '../visual-agent'
+import { UIAExecutor, UIAScanner, VisionQualityInspector } from '../ui-automation'
+import { commandPolicy } from '../permission/command-policy'
+import { authorization } from '../permission/authorization'
 
 const execAsync = promisify(exec)
 
@@ -120,7 +124,6 @@ export function setupSystemControlHandlers(): void {
 
       // v10.4: 路由 UI Automation 命令
       if (uiaCommands.includes(cmdKey)) {
-        const { UIAExecutor, UIAScanner, VisionQualityInspector } = await import('../ui-automation')
         let payload: any
         try {
           payload = cmdArgs.length > 0 ? JSON.parse(cmdArgs.join(' ')) : {}
@@ -204,9 +207,52 @@ export function setupSystemControlHandlers(): void {
         }
       }
 
-      // C-05 修复：白名单命令通过 spawn + shell:false + 参数数组执行，
-      // 不再拼接 shell 字符串，杜绝 & | ; $ ` 等元字符注入。
-      switch (cmdKey) {
+      // 动态命令策略（白名单 → 动态命令策略 + 受信命令区）
+      // 统一评估入口 evaluateCommand() 判定 builtin / trusted / deny。
+      // 安全底线保留：所有命令最终仍走 spawn + shell:false + 参数数组执行，
+      // 不拼接 shell 字符串，杜绝 & | ; $ ` 等元字符注入。
+      const decision = commandPolicy.evaluateCommand(command)
+
+      if (decision.type === 'deny') {
+        authorization.log({ channel: 'system-control', action: 'execute-command', decision: 'deny', detail: decision.reason })
+        return { success: false, error: decision.reason }
+      }
+
+      // 级别 >= 2（需确认）时二次确认；授权设置页可调级别
+      if (decision.level >= 2) {
+        const label = decision.type === 'trusted'
+          ? `执行受信命令「${decision.command.name}」`
+          : `执行命令「${decision.cmdKey}」`
+        const detail = decision.type === 'trusted'
+          ? `${decision.command.exe} ${decision.command.args.join(' ')}`
+          : cmdKey
+        if (!(await confirmUIAction(label, detail))) {
+          authorization.log({ channel: 'system-control', action: 'execute-command', decision: 'deny', detail: `用户取消: ${detail}` })
+          return { success: false, error: '用户已取消操作' }
+        }
+      }
+
+      // 受信命令区：可执行文件 + 固定参数数组，spawn + shell:false
+      if (decision.type === 'trusted') {
+        const tc = decision.command
+        try {
+          const { stdout, stderr } = await runSpawn(tc.exe, tc.args)
+          authorization.log({
+            channel: 'system-control', action: 'execute-command', level: tc.level,
+            decision: 'allow', detail: `受信命令 ${tc.name} → ${tc.exe} ${tc.args.join(' ')}`,
+          })
+          return { success: true, output: stdout || stderr || `已执行: ${tc.name}` }
+        } catch (err: any) {
+          authorization.log({
+            channel: 'system-control', action: 'execute-command', level: tc.level,
+            decision: 'deny', detail: `受信命令执行失败 ${tc.name}: ${err?.message || String(err)}`,
+          })
+          return { success: false, error: `受信命令执行失败: ${err?.message || String(err)}` }
+        }
+      }
+
+      // 内置命令（默认放行，级别可在授权设置页调整）
+      switch (decision.cmdKey) {
         case 'open-url': {
           const url = cmdArgs.join('')
           if (!/^https?:\/\//i.test(url)) {
@@ -214,10 +260,12 @@ export function setupSystemControlHandlers(): void {
           }
           const { shell } = require('electron') as any
           await shell.openExternal(url)
+          authorization.log({ channel: 'system-control', action: 'execute-command', level: decision.level, decision: 'allow', detail: `打开链接 ${url}` })
           return { success: true, output: `已打开: ${url}` }
         }
         case 'get-system-info': {
           const { stdout, stderr } = await runSpawn('systeminfo', [])
+          authorization.log({ channel: 'system-control', action: 'execute-command', level: decision.level, decision: 'allow', detail: '查询系统信息' })
           return { success: true, output: stdout || stderr }
         }
         case 'get-disk-space': {
@@ -226,6 +274,7 @@ export function setupSystemControlHandlers(): void {
             '-Command',
             'Get-CimInstance Win32_LogicalDisk | Select-Object Caption,Size,FreeSpace | Format-Table -AutoSize',
           ])
+          authorization.log({ channel: 'system-control', action: 'execute-command', level: decision.level, decision: 'allow', detail: '查询磁盘空间' })
           return { success: true, output: stdout || stderr }
         }
         case 'check-port': {
@@ -237,6 +286,7 @@ export function setupSystemControlHandlers(): void {
           const lines = stdout
             .split(/\r?\n/)
             .filter(l => l.includes(`:${port}`) && /LISTENING|ESTABLISHED/.test(l))
+          authorization.log({ channel: 'system-control', action: 'execute-command', level: decision.level, decision: 'allow', detail: `检查端口 ${port}` })
           return { success: true, output: lines.join('\n') || `未找到端口 ${port} 的监听/连接` }
         }
         default:
@@ -251,7 +301,7 @@ export function setupSystemControlHandlers(): void {
   /* ------ T04: visual-agent IPC 通道 ------ */
   ipcMain.handle('system:control:visual-execute', async (_event, task: any) => {
     try {
-      const va = await import('../visual-agent')
+      const va = visualAgentModule
       // visualAgent.executeTask 内部已包含人工确认门 + 控制状态广播，无需在此重复
       return await va.visualAgent.executeTask(task)
     } catch (e: any) {

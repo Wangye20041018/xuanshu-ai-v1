@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * Lifecycle Register — 应用生命周期管理与工具函数
  *
  * 从 index.ts 巨石拆分出：崩溃处理、日志工具、Smart App Control 检测、
@@ -11,6 +11,7 @@ import { app, Notification } from 'electron'
 import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { createLogger } from '../utils/logging'
+import { sglangProcess, stopSGLang } from '../ipc/sglang.ipc'
 
 const logger = createLogger('App')
 
@@ -18,6 +19,10 @@ const logger = createLogger('App')
 
 let logPath: string | null = null
 const LOG_MAX_SIZE = 5 * 1024 * 1024 // 5MB
+
+/** CrashGuard 防递归门闩：处理未捕获异常期间再次触发时直接跳过，
+ *  防止 handler 内部 console.error 写断管抛 EPIPE 导致的无限递归死循环 */
+let crashHandling = false
 
 export { logger }
 
@@ -244,7 +249,6 @@ export function setupBeforeQuit(options: {
   processGuardian: { stopAll: () => Promise<void> }
   vectorStore: any
   deviceOptimizer: { stopMonitoring: () => void }
-  voiceWakeService: { stop: () => void }
   modelManager: { shutdown: () => void }
   mobileChannelEngine: { stopServer: () => void }
   personalization: { shutdown: () => void }
@@ -255,7 +259,7 @@ export function setupBeforeQuit(options: {
 }) {
   const {
     pythonRuntime, processGuardian, vectorStore, deviceOptimizer,
-    voiceWakeService, modelManager, mobileChannelEngine, personalization,
+    modelManager, mobileChannelEngine, personalization,
     voiceEngine, knowledgeGraph, dynamicOperationEngine, visionModel,
   } = options
 
@@ -309,7 +313,6 @@ export function setupBeforeQuit(options: {
 
     const cleanupPromises = [
       safeCleanup('deviceOptimizer.stopMonitoring', () => deviceOptimizer.stopMonitoring()),
-      safeCleanup('voiceWakeService.stop', () => voiceWakeService.stop()),
       safeCleanup('modelManager.shutdown', () => modelManager.shutdown()),
       safeCleanup('mobileChannelEngine.stopServer', () => mobileChannelEngine.stopServer()),
       safeCleanup('personalization.shutdown', () => personalization.shutdown()),
@@ -321,7 +324,6 @@ export function setupBeforeQuit(options: {
     ]
 
     try {
-      const { sglangProcess, stopSGLang } = await import('../ipc/sglang.ipc')
       if (typeof stopSGLang === 'function') {
         await Promise.race([stopSGLang(), new Promise(resolve => setTimeout(resolve, 5000))])
       } else if (sglangProcess) {
@@ -403,20 +405,28 @@ export function checkPreviousCrash(): void {
 export function setupGlobalErrorHandlers() {
   checkPreviousCrash()
   process.on('uncaughtException', (error: Error, origin: string) => {
-    const moduleMatch = error.stack?.match(/at\s+\S+\s+\((.+?)[:\\/]src[\\/]main[\\/](.+?)\)/)
-    const moduleName = moduleMatch ? moduleMatch[2].replace(/\\/g, '/') : origin || 'unknown'
-    const errorMsg = [
-      `=== 未捕获异常 ===`,
-      `时间: ${new Date().toISOString()}`,
-      `模块: ${moduleName}`,
-      `错误: ${error.message}`,
-      `堆栈:\n${error.stack || '(无堆栈)'}`,
-      `================================`,
-    ].join('\n')
+    // 防递归门闩：handler 执行期间再次触发未捕获异常（如 console.error 写断管抛 EPIPE）直接跳过，
+    // 避免无限递归死循环拖死初始化
+    if (crashHandling) return
+    crashHandling = true
+    try {
+      const moduleMatch = error.stack?.match(/at\s+\S+\s+\((.+?)[:\\/]src[\\/]main[\\/](.+?)\)/)
+      const moduleName = moduleMatch ? moduleMatch[2].replace(/\\/g, '/') : origin || 'unknown'
+      const errorMsg = [
+        `=== 未捕获异常 ===`,
+        `时间: ${new Date().toISOString()}`,
+        `模块: ${moduleName}`,
+        `错误: ${error.message}`,
+        `堆栈:\n${error.stack || '(无堆栈)'}`,
+        `================================`,
+      ].join('\n')
 
-    logger.error(`[CrashGuard] ${errorMsg}`)
-    writeCrashLog(errorMsg)
-    sendCrashNotification('玄枢遇到异常，正在尝试恢复', `${moduleName}: ${error.message.slice(0, 80)}`)
+      logger.error(`[CrashGuard] ${errorMsg}`)
+      writeCrashLog(errorMsg)
+      sendCrashNotification('玄枢遇到异常，正在尝试恢复', `${moduleName}: ${error.message.slice(0, 80)}`)
+    } finally {
+      crashHandling = false
+    }
   })
 
   process.on('unhandledRejection', (reason: unknown, _promise: Promise<unknown>) => {

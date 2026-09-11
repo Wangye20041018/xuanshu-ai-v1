@@ -4,7 +4,7 @@ import {
   Shield, XCircle, CheckCircle,
   Settings as SettingsIcon, Lock,
   Info, ArrowLeft, Search,
-  Bell, Eye, Circle, Activity, X
+  Bell, Eye, Activity, X, Layers
 } from 'lucide-react'
 import { CONFIG_KEYS } from '../../../shared/config-keys'
 import WebSearchPanel from '../../components/WebSearchPanel'
@@ -15,13 +15,12 @@ import { useTranslation } from '../../i18n'
 import { useUndoManager } from '../../hooks/useUndoManager'
 import type { ConfigData } from '../../../shared/ipc-types'
 import type { HealthReport } from '../../../main/health-check'
-import SettingsVoiceWake from './SettingsVoiceWake'
 import SettingsSkillPacks from './SettingsSkillPacks'
 import SettingsPermissions from './SettingsPermissions'
 import SettingsGeneral from './SettingsGeneral'
-import SettingsVoiceprint from './SettingsVoiceprint'
-import SettingsContext from './SettingsContext'
 import SettingsQuickActions from './SettingsQuickActions'
+import SettingsAutomation from './SettingsAutomation'
+import SettingsAuthorization from './SettingsAuthorization'
 import { THEME_OPTIONS, applyTheme as applyThemeGlobal } from '../../theme'
 
 /* ============================================================
@@ -420,30 +419,6 @@ function Settings() {
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
   }, [])
 
-  /* ---------- 语音唤醒状态 ---------- */
-  const [wakeEnabled, setWakeEnabled] = useState(false)
-  const [wakeRunning, setWakeRunning] = useState(false)
-  const [wakeWord, setWakeWord] = useState('玄枢')
-  const [wakeSensitivity, setWakeSensitivity] = useState(80)
-
-  /* ---------- 退出词配置 ---------- */
-  const [exitWord, setExitWord] = useState('退出')
-  const [exitConfirmWords, setExitConfirmWords] = useState('确认退出,是的')
-  const [exitCancelWords, setExitCancelWords] = useState('取消,不要')
-  const [exitConfirmTTS, setExitConfirmTTS] = useState('确认退出语音模式吗？')
-
-  /* ---------- 声纹与降噪 ---------- */
-  const [voiceEnrolling, setVoiceEnrolling] = useState(false)
-  const [voiceVerifying, setVoiceVerifying] = useState(false)
-  const [voiceVerifyScore, setVoiceVerifyScore] = useState<number | null>(null)
-  const [voiceprintSampleCount, setVoiceprintSampleCount] = useState(0)
-  const [voiceprintSamples, setVoiceprintSamples] = useState<Array<{ id: string; label: string; enrolledAt: number; featureType: string }>>([])
-  const [noiseFilterOn, setNoiseFilterOn] = useState(true)
-  const [noiseLevel, setNoiseLevel] = useState(3)
-
-  /* ---------- 粒子球设置 ---------- */
-  const [floatingBallEnabled, setFloatingBallEnabled] = useState(false)
-
   /* ---------- 常规设置状态 ---------- */
   const [autoUpdate, setAutoUpdate] = useState(true)
   const [sendStats, setSendStats] = useState(false)
@@ -542,39 +517,11 @@ function Settings() {
 
   useEffect(() => {
     loadPermissions()
-    loadWakeStatus()
     loadConfig()
-    loadVoiceprintStatus()
 
     return () => {
-      if (wakeWordDebounceRef.current) clearTimeout(wakeWordDebounceRef.current)
-      if (sensitivityDebounceRef.current) clearTimeout(sensitivityDebounceRef.current)
     }
   }, [])
-
-  /** 加载声纹状态（样本列表、降噪配置等） */
-  const loadVoiceprintStatus = async () => {
-    try {
-      if (window.api) {
-        const status = await window.api.invoke<{
-          enrolled: boolean; sampleCount: number;
-          samples: Array<{ id: string; label: string; enrolledAt: number; featureType: string }>;
-          noiseFilter: { enabled: boolean; level: number };
-          mfccAvailable: boolean;
-        }>('voiceprint:status')
-        if (status) {
-          setVoiceprintSampleCount(status.sampleCount || 0)
-          setVoiceprintSamples(status.samples || [])
-          if (status.noiseFilter) {
-            setNoiseFilterOn(status.noiseFilter.enabled)
-            setNoiseLevel(status.noiseFilter.level)
-          }
-        }
-      }
-    } catch (e) {
-      logger.error('[Settings] 加载声纹状态失败:', e)
-    }
-  }
 
   const loadConfig = async () => {
     try {
@@ -586,17 +533,6 @@ function Settings() {
           setAutoUpdate(config.autoUpdate ?? true)
           setSendStats(config.sendStats ?? false)
           setAutoStart(config.autoStart ?? false)
-          if (config.voiceExitWord !== undefined) setExitWord(config.voiceExitWord)
-          if (config.voiceExitConfirmWords !== undefined) setExitConfirmWords(config.voiceExitConfirmWords)
-          if (config.voiceExitCancelWords !== undefined) setExitCancelWords(config.voiceExitCancelWords)
-          if (config.voiceExitConfirmTTS !== undefined) setExitConfirmTTS(config.voiceExitConfirmTTS)
-
-          /* ---------- 声纹与降噪配置 ---------- */
-          if (config.noiseFilterOn !== undefined) setNoiseFilterOn(config.noiseFilterOn)
-          if (config.noiseLevel !== undefined) setNoiseLevel(config.noiseLevel)
-
-          /* ---------- 粒子球配置 ---------- */
-          if (config.floatingBallEnabled !== undefined) setFloatingBallEnabled(config.floatingBallEnabled)
         }
       }
     } catch (err) {
@@ -798,206 +734,6 @@ function Settings() {
     await loadPermissions()
   }
 
-  /* ---------- 语音唤醒操作 ---------- */
-  const loadWakeStatus = async () => {
-    try {
-      if (window.api) {
-        const status = await window.api.invoke<{ running: boolean; config?: { enabled: boolean; wakeWord: string; sensitivity: number } }>('wake:status')
-        if (status) {
-          setWakeRunning(status.running || false)
-          if (status.config) {
-            setWakeEnabled(status.config.enabled || false)
-            setWakeWord(status.config.wakeWord || '玄枢')
-            setWakeSensitivity(status.config.sensitivity || 80)
-          }
-        }
-      }
-    } catch (err) {
-      logger.error('加载唤醒状态失败:', err)
-    }
-  }
-
-  const handleToggleWake = async () => {
-    try {
-      const newEnabled = !wakeEnabled
-      setWakeEnabled(newEnabled)
-      if (window.api) {
-        await window.api.invoke('wake:set-config', { enabled: newEnabled, wakeWord, sensitivity: wakeSensitivity })
-        if (newEnabled) {
-          await window.api.invoke('wake:start')
-          setWakeRunning(true)
-        } else {
-          await window.api.invoke('wake:stop')
-          setWakeRunning(false)
-        }
-      }
-    } catch (err) {
-      logger.error('切换唤醒失败:', err)
-      setWakeEnabled(!wakeEnabled)
-    }
-  }
-
-  const wakeWordDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleWakeWordChange = async (word: string) => {
-    setWakeWord(word)
-    if (wakeWordDebounceRef.current) clearTimeout(wakeWordDebounceRef.current)
-    wakeWordDebounceRef.current = setTimeout(() => {
-      if (window.api) window.api.invoke('wake:set-config', { wakeWord: word }).catch((e) => { logger.error('[Settings] 设置唤醒词失败:', e) })
-    }, 500)
-  }
-
-  const sensitivityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleSensitivityChange = async (value: number) => {
-    setWakeSensitivity(value)
-    if (sensitivityDebounceRef.current) clearTimeout(sensitivityDebounceRef.current)
-    sensitivityDebounceRef.current = setTimeout(() => {
-      if (window.api) window.api.invoke('wake:set-config', { sensitivity: value }).catch((e) => { logger.error('[Settings] 设置灵敏度失败:', e) })
-    }, 500)
-  }
-
-  /* ---------- 声纹与降噪 ---------- */
-  const handleVoiceEnroll = async (label?: string) => {
-    if (voiceEnrolling) return
-    setVoiceEnrolling(true)
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const audioCtx = new AudioContext({ sampleRate: 16000 })
-      const source = audioCtx.createMediaStreamSource(stream)
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-      const chunks: Float32Array[] = []
-
-      processor.onaudioprocess = (e) => {
-        chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)))
-      }
-      source.connect(processor)
-      processor.connect(audioCtx.destination)
-
-      // 录音 5 秒
-      await new Promise<void>((resolve) => setTimeout(resolve, 5000))
-
-      processor.disconnect()
-      source.disconnect()
-      stream.getTracks().forEach(t => t.stop())
-      await audioCtx.close()
-
-      const totalLength = chunks.reduce((s, c) => s + c.length, 0)
-      const audioData = new Float32Array(totalLength)
-      let offset = 0
-      for (const chunk of chunks) {
-        audioData.set(chunk, offset)
-        offset += chunk.length
-      }
-
-      if (window.api) {
-        const result = await window.api.invoke<{ success: boolean; sampleCount?: number; error?: string }>(
-          'voiceprint:enroll',
-          { audioData, label: label || undefined }
-        )
-        if (result?.success) {
-          const count = result.sampleCount || 1
-          setVoiceprintSampleCount(count)
-          // v2.3: 刷新声纹样本列表，确保前端样本 ID 与后端一致
-          loadVoiceprintStatus()
-        } else {
-          logger.error('[Settings] 声纹注册失败:', result?.error)
-        }
-      }
-    } catch (e) {
-      logger.error('[Settings] 声纹录入失败:', e)
-    } finally {
-      setVoiceEnrolling(false)
-    }
-  }
-
-  const handleVoiceVerify = async () => {
-    if (voiceVerifying) return
-    setVoiceVerifying(true)
-    setVoiceVerifyScore(null)
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const audioCtx = new AudioContext({ sampleRate: 16000 })
-      const source = audioCtx.createMediaStreamSource(stream)
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-      const chunks: Float32Array[] = []
-
-      processor.onaudioprocess = (e) => {
-        chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)))
-      }
-      source.connect(processor)
-      processor.connect(audioCtx.destination)
-
-      // 录音 3 秒
-      await new Promise<void>((resolve) => setTimeout(resolve, 3000))
-
-      processor.disconnect()
-      source.disconnect()
-      stream.getTracks().forEach(t => t.stop())
-      await audioCtx.close()
-
-      const totalLength = chunks.reduce((s, c) => s + c.length, 0)
-      const audioData = new Float32Array(totalLength)
-      let offset = 0
-      for (const chunk of chunks) {
-        audioData.set(chunk, offset)
-        offset += chunk.length
-      }
-
-      if (window.api) {
-        const result = await window.api.invoke<{ match: boolean; score: number }>('voiceprint:verify', audioData)
-        setVoiceVerifyScore(result?.score ?? 0)
-      }
-    } catch (e) {
-      logger.error('[Settings] 声纹验证失败:', e)
-    } finally {
-      setVoiceVerifying(false)
-    }
-  }
-
-  const handleVoiceClear = async () => {
-    try {
-      if (window.api) {
-        await window.api.invoke('voiceprint:clear')
-        setVoiceprintSampleCount(0)
-        setVoiceprintSamples([])
-        setVoiceVerifyScore(null)
-      }
-    } catch (e) {
-      logger.error('[Settings] 清除声纹失败:', e)
-    }
-  }
-
-  /** 删除单个声纹样本 */
-  const handleVoiceDeleteSample = async (sampleId: string) => {
-    try {
-      if (window.api) {
-        const result = await window.api.invoke<{ success: boolean; sampleCount?: number }>('voiceprint:delete-sample', sampleId)
-        if (result?.success) {
-          setVoiceprintSampleCount(result.sampleCount || 0)
-          // v2.3: 刷新声纹样本列表
-          loadVoiceprintStatus()
-        }
-      }
-    } catch (e) {
-      logger.error('[Settings] 删除声纹样本失败:', e)
-    }
-  }
-
-  // 声纹状态已在 loadConfig 中统一加载，此处不再重复
-
-  const toggleNoiseFilter = () => {
-    const next = !noiseFilterOn
-    setNoiseFilterOn(next)
-    scheduleConfigSave(CONFIG_KEYS.NOISE_FILTER_ON, next)
-    // v2.3: 同步到 voiceprint 模块，与后端 voiceprint:noise-filter handler 一致
-    if (window.api) window.api.invoke('voiceprint:noise-filter', next).catch((e) => { logger.error('[Settings] 噪音过滤切换失败:', e) })
-  }
-
-  /* ---------- 子组件回调包装器 ---------- */
-
-  const handleExitWordChange = (v: string) => { setExitWord(v); scheduleConfigSave(CONFIG_KEYS.VOICE_EXIT_WORD, v) }
-  const handleExitConfirmWordsChange = (v: string) => { setExitConfirmWords(v); scheduleConfigSave(CONFIG_KEYS.VOICE_EXIT_CONFIRM_WORDS, v) }
-  const handleExitCancelWordsChange = (v: string) => { setExitCancelWords(v); scheduleConfigSave(CONFIG_KEYS.VOICE_EXIT_CANCEL_WORDS, v) }
-  const handleExitConfirmTTSChange = (v: string) => { setExitConfirmTTS(v); scheduleConfigSave(CONFIG_KEYS.VOICE_EXIT_CONFIRM_TTS, v) }
 
   // SettingsGeneral callbacks
   const handleAutoUpdateChange = () => { const v = !autoUpdate; setAutoUpdate(v); scheduleConfigSave(CONFIG_KEYS.AUTO_UPDATE, v) }
@@ -1005,42 +741,18 @@ function Settings() {
   const handleAutoStartChange = () => { const v = !autoStart; setAutoStart(v); scheduleConfigSave(CONFIG_KEYS.AUTO_START, v) }
   const handleThemeColorChange = (themeId: string) => { applyTheme(themeId) }
 
-  // 悬浮球切换
-  const handleFloatingBallToggle = () => {
-    const v = !floatingBallEnabled
-    setFloatingBallEnabled(v)
-    scheduleConfigSave('floatingBallEnabled', v)
-    if (window.api) {
-      if (v) {
-        window.api.invoke('floating-ball:open').catch((e) => { logger.error('[Settings] 悬浮球开启失败:', e) })
-      } else {
-        window.api.invoke('floating-ball:hide').catch((e) => { logger.error('[Settings] 悬浮球关闭失败:', e) })
-      }
-    }
-  }
-
-  // SettingsVoiceprint callbacks
-  const handleNoiseLevelChange = (level: number) => {
-    setNoiseLevel(level)
-    scheduleConfigSave(CONFIG_KEYS.NOISE_LEVEL, level)
-    // v2.3: 同步到 voiceprint 模块，更新后端噪声门阈值
-    if (window.api) window.api.invoke('voiceprint:noise-level', level).catch((e) => { logger.error('[Settings] 降噪等级同步失败:', e) })
-  }
-
   /* ---------- 设置分组导航（左侧锚点） ---------- */
   const [activeGroup, setActiveGroup] = useState('general')
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({})
   const SETTING_GROUPS: Array<{ id: string; label: string }> = [
-    { id: 'general', label: '常规设置' },
-    { id: 'floating-ball', label: '悬浮球' },
-    { id: 'context', label: '情境感知' },
     { id: 'quick-actions', label: '首页预指令' },
-    { id: 'voice-wake', label: '语音唤醒' },
+    { id: 'automation', label: '自动化' },
     { id: 'permissions', label: '权限管理' },
-    { id: 'voiceprint', label: '声纹与降噪' },
+    { id: 'general', label: '常规设置' },
     { id: 'skill-packs', label: '技能包' },
+    { id: 'authorization', label: '分级授权' },
     { id: 'search', label: '搜索设置' },
-    { id: 'health', label: '体检' },
+    { id: 'health', label: '智能自检' },
     { id: 'about', label: '关于' },
   ]
   const scrollToSection = (id: string) => {
@@ -1141,54 +853,17 @@ function Settings() {
             gap: 24,
           }}
         >
-        {/* ~~~~~~~~~~~ 粒子球设置卡片 ~~~~~~~~~~~ */}
-        <section ref={(el) => { sectionRefs.current['floating-ball'] = el }} style={{ scrollMarginTop: 16 }}>
-        <GlassCard
-          title="悬浮球"
-          icon={<Circle size={18} />}
-          accentColor={COLORS.accent}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-              <div style={{ fontSize: 13, color: COLORS.textSecondary }}>
-                显示悬浮球（桌面快捷球，单击打开主窗口，双击快捷面板）
-              </div>
-              <Toggle checked={floatingBallEnabled} onChange={handleFloatingBallToggle} />
-            </div>
-          </div>
-        </GlassCard>
-        </section>
-
-        {/* ~~~~~~~~~~~ 情境感知 · 第六感 ~~~~~~~~~~~ */}
-        <section ref={(el) => { sectionRefs.current['context'] = el }} style={{ scrollMarginTop: 16 }}>
-        <SettingsContext />
-        </section>
 
         {/* ~~~~~~~~~~~ 首页预指令配置 ~~~~~~~~~~~ */}
         <section ref={(el) => { sectionRefs.current['quick-actions'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsQuickActions />
         </section>
 
-        {/* ~~~~~~~~~~~ 语音唤醒卡片 ~~~~~~~~~~~ */}
-        <section ref={(el) => { sectionRefs.current['voice-wake'] = el }} style={{ scrollMarginTop: 16 }}>
-        <SettingsVoiceWake
-          wakeEnabled={wakeEnabled}
-          wakeRunning={wakeRunning}
-          wakeWord={wakeWord}
-          wakeSensitivity={wakeSensitivity}
-          exitWord={exitWord}
-          exitConfirmWords={exitConfirmWords}
-          exitCancelWords={exitCancelWords}
-          exitConfirmTTS={exitConfirmTTS}
-          onToggleWake={handleToggleWake}
-          onWakeWordChange={handleWakeWordChange}
-          onSensitivityChange={handleSensitivityChange}
-          onExitWordChange={handleExitWordChange}
-          onExitConfirmWordsChange={handleExitConfirmWordsChange}
-          onExitCancelWordsChange={handleExitCancelWordsChange}
-          onExitConfirmTTSChange={handleExitConfirmTTSChange}
-        />
+        {/* ~~~~~~~~~~~ 自动化任务卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['automation'] = el }} style={{ scrollMarginTop: 16 }}>
+        <SettingsAutomation />
         </section>
+
 
         {/* ~~~~~~~~~~~ 权限管理卡片 ~~~~~~~~~~~ */}
         <section ref={(el) => { sectionRefs.current['permissions'] = el }} style={{ scrollMarginTop: 16 }}>
@@ -1222,28 +897,42 @@ function Settings() {
         />
         </section>
 
-        {/* ~~~~~~~~~~~ 声纹与降噪 ~~~~~~~~~~~ */}
-        <section ref={(el) => { sectionRefs.current['voiceprint'] = el }} style={{ scrollMarginTop: 16 }}>
-        <SettingsVoiceprint
-          voiceprintSampleCount={voiceprintSampleCount}
-          voiceprintSamples={voiceprintSamples}
-          voiceEnrolling={voiceEnrolling}
-          voiceVerifying={voiceVerifying}
-          voiceVerifyScore={voiceVerifyScore}
-          noiseFilterOn={noiseFilterOn}
-          noiseLevel={noiseLevel}
-          onVoiceEnroll={handleVoiceEnroll}
-          onVoiceVerify={handleVoiceVerify}
-          onVoiceClear={handleVoiceClear}
-          onVoiceDeleteSample={handleVoiceDeleteSample}
-          onNoiseFilterChange={toggleNoiseFilter}
-          onNoiseLevelChange={handleNoiseLevelChange}
-        />
-        </section>
 
         {/* ~~~~~~~~~~~ 技能包管理卡片 ~~~~~~~~~~~ */}
         <section ref={(el) => { sectionRefs.current['skill-packs'] = el }} style={{ scrollMarginTop: 16 }}>
         <SettingsSkillPacks />
+        </section>
+
+        {/* ~~~~~~~~~~~ 分级授权设置卡片 ~~~~~~~~~~~ */}
+        <section ref={(el) => { sectionRefs.current['authorization'] = el }} style={{ scrollMarginTop: 16 }}>
+        <SettingsAuthorization />
+        </section>
+
+        {/* ~~~~~~~~~~~ 软件库入口（已独立成页） ~~~~~~~~~~~ */}
+        <section style={{ scrollMarginTop: 16 }}>
+        <GlassCard
+          title="软件管理"
+          icon={<Layers size={18} />}
+          accentColor={COLORS.accent}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              软件库、软件状态与技能包联动已迁移至独立"软件库"页面，设置页更精简。
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={() => { window.location.hash = '#/software' }}
+              style={{
+                padding: '8px 14px', borderRadius: 10, border: 'none',
+                background: `linear-gradient(135deg, ${HEX_COLORS.accent}, #22d3ee)`,
+                color: '#000', fontWeight: 600, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              前往软件库 →
+            </motion.button>
+          </div>
+        </GlassCard>
         </section>
 
         {/* ~~~~~~~~~~~ 搜索设置卡片 ~~~~~~~~~~~ */}
@@ -1260,10 +949,13 @@ function Settings() {
         {/* ~~~~~~~~~~~ 体检卡片 ~~~~~~~~~~~ */}
         <section ref={(el) => { sectionRefs.current['health'] = el }} style={{ scrollMarginTop: 16 }}>
         <GlassCard
-          title="体检"
+          title="智能自检修复引擎"
           icon={<Activity size={18} />}
           accentColor={COLORS.cyan}
         >
+          <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 6, lineHeight: 1.5 }}>
+            检测模型链路 / 联网 / 日志健康 / 运行资源 → 勾选可自动修复项 → 修复后自动复检验证（与回归基线同判据）。
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {healthReport && (
               <div
@@ -1307,7 +999,7 @@ function Settings() {
                   opacity: healthLoading ? 0.6 : 1,
                 }}
               >
-                {healthLoading ? '检查中...' : '运行体检'}
+                {healthLoading ? '自检中...' : '开始自检'}
               </motion.button>
               {fixableItems.length > 0 && (
                 <motion.button

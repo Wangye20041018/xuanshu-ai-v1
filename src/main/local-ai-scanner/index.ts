@@ -14,7 +14,7 @@
  *   - 开始菜单快捷方式（解析 .lnk 目标）
  *   - 常见安装目录探测
  */
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
@@ -273,6 +273,97 @@ $out | ConvertTo-Json -Compress
     const recommended = ['kimi', 'doubao', 'deepseek', 'zhipu'].filter(id => !installedIds.has(id))
     return { installed, recommended }
   }
+
+  /* ============================================================
+   * Ollama 服务管理（本机 AI 服务接入玄枢）
+   * ============================================================ */
+
+  /** 探测 Ollama 安装位置（扫描结果优先，其次常见安装目录） */
+  private findOllamaExe(): string {
+    const fromScan = this.list().find(c => c.id === 'ollama')
+    if (fromScan && existsSync(fromScan.exePath)) return fromScan.exePath
+    const candidates = [
+      join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'),
+      join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Ollama', 'ollama.exe'),
+      join(process.env.ProgramFiles || 'C:\\Program Files', 'Ollama', 'ollama.exe'),
+    ]
+    return candidates.find(p => existsSync(p)) || ''
+  }
+
+  /** 查询 Ollama 服务状态（安装 + 运行 + 版本） */
+  async ollamaStatus(): Promise<{ installed: boolean; exePath: string; running: boolean; version: string }> {
+    const exePath = this.findOllamaExe()
+    let running = false
+    let version = ''
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 2500)
+      const resp = await fetch('http://127.0.0.1:11434/api/version', { signal: controller.signal })
+      clearTimeout(timer)
+      if (resp.ok) {
+        running = true
+        const data = await resp.json().catch(() => null)
+        version = data?.version || ''
+      }
+    } catch { /* 服务未运行 */ }
+    return { installed: !!exePath, exePath, running, version }
+  }
+
+  /** 启动 Ollama 服务（detached） */
+  async ollamaStart(): Promise<{ success: boolean; error?: string }> {
+    const exePath = this.findOllamaExe()
+    if (!exePath) return { success: false, error: '未找到 Ollama，请先安装' }
+    try {
+      const proc = spawn(exePath, ['serve'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      proc.unref()
+      // 等待健康
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        try {
+          const resp = await fetch('http://127.0.0.1:11434/api/version', { signal: AbortSignal.timeout(1500) })
+          if (resp.ok) {
+            logger.info('[LocalAiScanner] Ollama 服务已启动')
+            return { success: true }
+          }
+        } catch { /* 继续等待 */ }
+      }
+      return { success: false, error: 'Ollama 启动超时（15秒）' }
+    } catch (e: any) {
+      logger.error('[LocalAiScanner] Ollama 启动失败:', e)
+      return { success: false, error: e?.message || String(e) }
+    }
+  }
+
+  /** 停止 Ollama 服务（taskkill，best-effort） */
+  async ollamaStop(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { stdout } = await execFileAsync('taskkill.exe', ['/IM', 'ollama.exe', '/F'], {
+        timeout: 10000,
+        windowsHide: true,
+      })
+      logger.info(`[LocalAiScanner] Ollama 服务已停止: ${(stdout || '').trim()}`)
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || String(e) }
+    }
+  }
+
+  /** 拉取 Ollama 已安装模型列表（/api/tags） */
+  async ollamaModels(): Promise<Array<{ name: string; size: number }>> {
+    try {
+      const resp = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(5000) })
+      if (!resp.ok) return []
+      const data = await resp.json().catch(() => null)
+      const models = data?.models || []
+      return models.map((m: any) => ({ name: m.name || m.model || '', size: m.size || 0 }))
+    } catch {
+      return []
+    }
+  }
 }
 
 export const localAiScanner = new LocalAiScanner()
@@ -292,7 +383,51 @@ export function setupLocalAiHandlers(): void {
     }
   })
 
-  ipcMain.handle('local-ai:suggest', () => localAiScanner.suggest())
+  ipcMain.handle('local-ai:suggest', () => {
+    try {
+      return localAiScanner.suggest()
+    } catch (e) {
+      logger.error('[LocalAiScanner] local-ai:suggest 失败:', e)
+      return { installed: [], recommended: [] }
+    }
+  })
+
+  /* ---------- Ollama 服务管理 ---------- */
+  ipcMain.handle('local-ai:ollama-status', async () => {
+    try {
+      return await localAiScanner.ollamaStatus()
+    } catch (e) {
+      logger.error('[LocalAiScanner] ollama-status 失败:', e)
+      return { installed: false, exePath: '', running: false, version: '' }
+    }
+  })
+
+  ipcMain.handle('local-ai:ollama-start', async () => {
+    try {
+      return await localAiScanner.ollamaStart()
+    } catch (e) {
+      logger.error('[LocalAiScanner] ollama-start 失败:', e)
+      return { success: false, error: (e as Error)?.message || String(e) }
+    }
+  })
+
+  ipcMain.handle('local-ai:ollama-stop', async () => {
+    try {
+      return await localAiScanner.ollamaStop()
+    } catch (e) {
+      logger.error('[LocalAiScanner] ollama-stop 失败:', e)
+      return { success: false, error: (e as Error)?.message || String(e) }
+    }
+  })
+
+  ipcMain.handle('local-ai:ollama-models', async () => {
+    try {
+      return await localAiScanner.ollamaModels()
+    } catch (e) {
+      logger.error('[LocalAiScanner] ollama-models 失败:', e)
+      return []
+    }
+  })
 
   // 应用启动后延迟静默扫描一次（不阻塞启动）
   try {

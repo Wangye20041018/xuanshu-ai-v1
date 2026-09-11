@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * 本地全文搜索引擎
  * 基于 Whoosh 对指定目录建立索引，支持自然语言搜索文件内容
  */
@@ -6,6 +6,7 @@ import { app, ipcMain } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { logger } from '../../shared/logger'
+import { pythonRuntime } from '../runtime/python'
 
 // @ts-expect-error TS6133 — assigned but consumed through IPC handlers
 let searchEngine: { index: any; searcher: any } | null = null
@@ -13,7 +14,6 @@ let whooshInstalled: boolean | null = null  // 缓存安装状态，避免重复
 
 async function ensureWhoosh(): Promise<boolean> {
   if (whooshInstalled !== null) return whooshInstalled
-  const { pythonRuntime } = await import('../runtime/python')
   const script = `
 import sys, json, os
 try:
@@ -46,10 +46,49 @@ except ImportError:
   return whooshInstalled
 }
 
+/**
+ * 本地文件全文检索（可复用函数，供工具层 local_file_search 与 IPC 共用）。
+ * 在已建立的 Whoosh 索引中按关键词检索，返回 { results: [{path, filename, snippet}], total }。
+ */
+export async function queryFiles(query: string): Promise<{ results: Array<{ path: string; filename: string; snippet: string; score: number }>; total: number; error?: string }> {
+  try {
+    const idxDir = join(app.getPath('userData'), 'fulltext-index')
+    const safeQuery = JSON.stringify(query)
+    const script = `
+import sys, json
+sys.path.insert(0, r"${idxDir}")
+from whoosh.index import open_dir
+from whoosh.qparser import MultifieldParser
+
+safe_query = json.loads(${safeQuery})
+
+ix = open_dir(r"${idxDir}")
+with ix.searcher() as searcher:
+    query_parser = MultifieldParser(["filename","content"], ix.schema)
+    q = query_parser.parse(safe_query)
+    results = searcher.search(q, limit=30)
+    items = []
+    for r in results:
+        items.append({
+            "path": r["path"],
+            "filename": r["filename"],
+            "score": r.score,
+            "snippet": r.highlights("content", text=r["content"], top=3) if r["content"] else ""
+        })
+    print(json.dumps({"results": items, "total": len(results)}, ensure_ascii=False))
+`
+    await ensureWhoosh()
+    const result = await pythonRuntime.runScript(script)
+    const outputLine = (result.output || '').trim().split('\n').pop() || '{}'
+    return JSON.parse(outputLine)
+  } catch (e) {
+    return { results: [], total: 0, error: String(e) }
+  }
+}
+
 export function setupFulltextSearchHandlers(): void {
   ipcMain.handle('search:index-directory', async (_e, dirPath: string) => {
     try {
-      const { pythonRuntime } = await import('../runtime/python')
       const idxDir = join(app.getPath('userData'), 'fulltext-index')
       // 规范化路径为正斜杠，避免 Python 字符串中反斜杠转义问题
       const safeIdxDir = idxDir.replace(/\\/g, '/')
@@ -98,46 +137,12 @@ except Exception as e:
   })
 
   ipcMain.handle('search:query-files', async (_e, query: string) => {
-    try {
-      const { pythonRuntime } = await import('../runtime/python')
-      const idxDir = join(app.getPath('userData'), 'fulltext-index')
-      const safeQuery = JSON.stringify(query)
-      const script = `
-import sys, json
-sys.path.insert(0, r"${idxDir}")
-from whoosh.index import open_dir
-from whoosh.qparser import MultifieldParser
-
-safe_query = json.loads(${safeQuery})
-
-ix = open_dir(r"${idxDir}")
-with ix.searcher() as searcher:
-    query_parser = MultifieldParser(["filename","content"], ix.schema)
-    q = query_parser.parse(safe_query)
-    results = searcher.search(q, limit=30)
-    items = []
-    for r in results:
-        items.append({
-            "path": r["path"],
-            "filename": r["filename"],
-            "score": r.score,
-            "snippet": r.highlights("content", text=r["content"], top=3) if r["content"] else ""
-        })
-    print(json.dumps({"results": items, "total": len(results)}, ensure_ascii=False))
-`
-      await ensureWhoosh()
-      const result = await pythonRuntime.runScript(script)
-      const outputLine = (result.output || '').trim().split('\n').pop() || '{}'
-      return JSON.parse(outputLine)
-    } catch (e) {
-      return { results: [], total: 0, error: String(e) }
-    }
+    return queryFiles(String(query || ''))
   })
 
   // 增量索引 — 单个文件
   ipcMain.handle('search:index-file', async (_e, filePath: string) => {
     try {
-      const { pythonRuntime } = await import('../runtime/python')
       const idxDir = join(app.getPath('userData'), 'fulltext-index')
       if (!existsSync(filePath)) return { status: 'error', msg: '文件不存在' }
       const content = readFileSync(filePath, 'utf-8').slice(0, 100000)
@@ -175,7 +180,6 @@ except Exception as e:
   // 删除索引条目
   ipcMain.handle('search:delete-file', async (_e, filePath: string) => {
     try {
-      const { pythonRuntime } = await import('../runtime/python')
       const idxDir = join(app.getPath('userData'), 'fulltext-index')
       const safePath = JSON.stringify(filePath)
       const script = `
@@ -205,12 +209,10 @@ except Exception as e:
   // 索引统计
   ipcMain.handle('search:index-stats', async () => {
     try {
-      const { pythonRuntime } = await import('../runtime/python')
       const idxDir = join(app.getPath('userData'), 'fulltext-index')
       if (!existsSync(idxDir)) return { docCount: 0, indexSize: 0, lastUpdate: null }
       const script = `
 import sys, json, os
-import { logger } from '../../shared/logger'
 sys.path.insert(0, r"${idxDir}")
 from whoosh.index import open_dir
 

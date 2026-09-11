@@ -1,11 +1,14 @@
-import { ipcMain } from 'electron'
+﻿﻿import { ipcMain } from 'electron'
 import { allEngines } from './engines'
 import { scrapeUrl, scrapeUrls } from './scraper'
 import { createProxyAgent } from '../utils/proxy-resolver'
 import { logger } from '../../shared/logger'
 import {SearchResponse, WeatherResponse, ExchangeRateResponse, NewsResponse, NewsItem, ScrapedPage, FunctionTool, SearchContext} from './types'
 import { aggregateSearch } from './web-search/search-aggregator'
-import { SearchEngine, getEngineById } from './web-search/search-engine'
+import { SearchEngine, getEngineById, selectEnginesForQuery } from './web-search/search-engine'
+import * as knowledgeGraphModule from '../knowledge-graph'
+import * as ragModule from '../rag'
+import * as embeddingModule from '../rag/embedding'
 
 /** 创建带超时+代理的 fetch */
 function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 10000): Promise<Response> {
@@ -38,7 +41,7 @@ const SEARCH_TOOLS: FunctionTool[] = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: '搜索互联网获取最新信息。当需要查询实时信息、最新新闻、事实核查、或任何模型知识截止日期之后的信息时使用。',
+      description: '搜索互联网获取最新信息。当需要查询实时信息、最新新闻、事实核查、或任何模型知识截止日期之后的信息时使用。返回标题、链接与摘要列表。',
       parameters: {
         type: 'object',
         properties: {
@@ -46,9 +49,13 @@ const SEARCH_TOOLS: FunctionTool[] = [
             type: 'string',
             description: '搜索关键词，使用简洁明确的关键词组合'
           },
-          count: {
+          max_results: {
             type: 'number',
             description: '期望返回的结果数量，默认10'
+          },
+          count: {
+            type: 'number',
+            description: '期望返回的结果数量（max_results 的兼容别名），默认10'
           },
           language: {
             type: 'string',
@@ -191,7 +198,6 @@ class InternetSearch {
     // 内层搜索优先复用 web-search 聚合器（httpFriendly 引擎无需 API key），失败再回退多引擎
     let searchResponse: SearchResponse = { results: [], total: 0, provider: 'none' }
     try {
-      const { selectEnginesForQuery } = await import('./web-search/search-engine')
       const engines = selectEnginesForQuery(query).filter((e: SearchEngine) => e.httpFriendly).slice(0, 2)
       if (engines.length > 0) {
         const agg = await aggregateSearch(query, engines, { timeoutPerEngine: 8000, maxResultsPerEngine: count })
@@ -248,15 +254,15 @@ class InternetSearch {
     let getEmbedding: ((text: string) => Promise<{ embedding: number[] }>) | null = null
 
     try {
-      const kg = await import('../knowledge-graph')
+      const kg = knowledgeGraphModule
       knowledgeGraph = kg.knowledgeGraph
     } catch (e) { logger.error('[Search] knowledge-graph import failed:', e) }
     try {
-      const rag = await import('../rag')
+      const rag = ragModule
       vectorStore = rag.vectorStore
     } catch (e) { logger.error('[Search] rag import failed:', e) }
     try {
-      const emb = await import('../rag/embedding')
+      const emb = embeddingModule
       splitText = emb.splitText
       getEmbedding = emb.getEmbedding
     } catch (e) { logger.error('[Search] rag/embedding import failed:', e) }

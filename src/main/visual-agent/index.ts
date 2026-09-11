@@ -21,7 +21,6 @@ import { visualReasoningEngine } from './visual-reasoning'
 import { interactionExecutor } from './interaction-executor'
 import { stateTracker } from './state-tracker'
 import { commonKnowledge } from './common-knowledge'
-import { locateViaUIA } from './uia-bridge'
 import { logger } from '../../shared/logger'
 import { notifyControlStart, notifyControlFinish } from '../control-state'
 
@@ -126,31 +125,22 @@ class VisualAgentV2 {
         const screenshot = await screenObserver.captureFullScreen()
         stateTracker.transition('observing', { lastObservation: screenshot })
 
-        // 2b. 识别元素（v10.2：UIA 优先，视觉回退）
+        // 2b. 识别元素（v11：UIA 控件树 → OCR 文字提取 → 2B 视觉模型 三级回退）
         stateTracker.transition('recognizing')
         let elements: Element[] = []
         let context: ScreenContext = {
           description: '', applicationName: null, windowTitle: null,
           dialogOpen: false, loading: false, errorMessage: null, suggestions: [],
         }
-        let uiaHit = false
-        try {
-          const hit = await locateViaUIA(task.intent)
-          if (hit && hit.hit && hit.element) {
-            uiaHit = true
-            elements = [hit.element]
-            context.description = `UIA 定位命中标准控件: ${hit.element.label}`
-            context.suggestions = ['已通过 UI Automation 定位标准控件（零显存）']
-            logger.debug(`[VisualAgent] UIA 命中: ${hit.element.label}`)
-          }
-        } catch (uiaErr) {
-          logger.warn('[VisualAgent] UIA 定位失败，回退视觉识别:', uiaErr)
-        }
-        if (!uiaHit) {
-          // 无标准控件（小众软件/游戏/UWP）→ 回退视觉识别（接 VL-7B / Qwen2-VL-2B 视觉）
-          const rec = await elementRecognizer.identifyElements(screenshot.base64, task.intent)
-          elements = rec.elements
-          context = rec.context
+        const rec = await elementRecognizer.recognizeScreen(screenshot.base64, task.intent)
+        elements = rec.elements
+        context = rec.context
+        if (rec.source === 'uia') {
+          logger.debug(`[VisualAgent] UIA 控件树命中 ${elements.length} 个控件（零显存）`)
+        } else if (rec.source === 'ocr') {
+          logger.debug(`[VisualAgent] OCR 文字提取命中 ${elements.length} 处文字（零显存）`)
+        } else {
+          logger.debug(`[VisualAgent] 视觉模型兜底识别 ${elements.length} 个元素`)
         }
 
         // 2c. 主模型决策

@@ -1,11 +1,43 @@
-/* ============================================================
+﻿﻿/* ============================================================
  * 统一工具注册中心
- * 将所有分散的工具（插件引擎、动态操作、搜索、视觉、知识库、语音）
+ * 将所有分散的工具（插件引擎、动态操作、搜索、视觉、知识库）
  * 注册到统一的 ToolRegistry，供 Agent 调用
  * ============================================================ */
 
 import { ToolDefinition, ToolResult } from './types'
 import { logger } from '../../shared/logger'
+import { getEmbedding } from '../rag/embedding'
+import { visualAgent } from '../visual-agent'
+import { selfModifyService } from '../self-modify/self-modify.service'
+import { registerSoftwareTools } from './software-tools'
+import { sendToAllWindows } from '../utils/broadcast'
+import type { ToolCallEvent } from '../../shared/agent-types'
+
+/** 参数摘要：取前若干键值，截断敏感/过长的值（用于工具调用事件展示） */
+function summarizeArgs(params: Record<string, unknown>): string {
+  try {
+    const entries = Object.entries(params || {}).slice(0, 4).map(([k, v]) => {
+      const s = typeof v === 'string' ? v : JSON.stringify(v)
+      const clipped = s.length > 60 ? s.slice(0, 60) + '…' : s
+      return `${k}=${clipped}`
+    })
+    return entries.length > 0 ? entries.join(', ') : '（无参数）'
+  } catch {
+    return '（参数摘要不可用）'
+  }
+}
+
+/** 结果预览：截断，避免把大段数据塞进事件 */
+function summarizeResult(result: ToolResult): string {
+  try {
+    if (result.error) return `错误：${String(result.error).slice(0, 120)}`
+    if (result.data === undefined || result.data === null) return '完成'
+    const s = JSON.stringify(result.data)
+    return s.length > 120 ? s.slice(0, 120) + '…' : s
+  } catch {
+    return '完成'
+  }
+}
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map()
@@ -79,18 +111,46 @@ export class ToolRegistry {
     const startTime = Date.now()
     const stat = this.stats.get(name)!
 
+    // A-4：工具调用事件（start）推送渲染层，供豆包 UI 消费
+    this.emitToolCall(name, params, 'start')
+
     try {
       const result = await tool.execute(params)
       const duration = Date.now() - startTime
       stat.calls++
       stat.totalDuration += duration
+      this.emitToolCall(name, params, result.success ? 'done' : 'error', result)
       return { ...result, duration }
     } catch (err) {
       const duration = Date.now() - startTime
       stat.errors++
       stat.totalDuration += duration
       logger.error(`[ToolRegistry] 工具 "${name}" 执行失败:`, err)
+      this.emitToolCall(name, params, 'error', { success: false, error: String(err) })
       return { success: false, error: String(err), duration }
+    }
+  }
+
+  /** A-4：推送 xuanshu:tool-call 事件（参数摘要脱敏截断，结果预览截断） */
+  private emitToolCall(
+    tool: string,
+    params: Record<string, unknown>,
+    status: 'start' | 'done' | 'error',
+    result?: ToolResult,
+  ): void {
+    try {
+      const argsSummary = summarizeArgs(params)
+      const resultPreview = result ? summarizeResult(result) : undefined
+      const payload: ToolCallEvent = {
+        tool,
+        argsSummary,
+        status,
+        resultPreview,
+        ts: Date.now(),
+      }
+      sendToAllWindows('xuanshu:tool-call', payload)
+    } catch (e) {
+      logger.warn(`[ToolRegistry] tool-call 事件推送失败: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -137,7 +197,6 @@ interface ToolDeps {
   dynamicOperationEngine?: any
   knowledgeGraph?: any
   vectorStore?: any
-  voiceEngine?: any
   internetSearch?: any
 }
 
@@ -147,13 +206,22 @@ function registerSearchTools(internetSearch: any): void {
     (internetSearch.getTools && internetSearch.getTools()) || []
 
   const executors: Record<string, (params: Record<string, unknown>) => Promise<ToolResult>> = {
-    web_search: async (p) => ({
-      success: true,
-      data: await internetSearch.search(String(p.query || ''), {
-        count: Number(p.count) || 10,
+    web_search: async (p) => {
+      // A-1：对齐任务书参数名 max_results（count 作为兼容别名保留）
+      const maxResults = p.max_results !== undefined ? Number(p.max_results) : Number(p.count) || 10
+      const resp = await internetSearch.search(String(p.query || ''), {
+        count: maxResults,
         language: String(p.language || 'zh-CN'),
-      }),
-    }),
+      })
+      // 归一化为「标题/链接/摘要」列表，便于 Agent 与 UI 直接消费
+      const items = (resp.results || []).map((r: { title?: string; url?: string; snippet?: string }) => ({
+        title: r.title || '',
+        url: r.url || '',
+        link: r.url || '',
+        summary: r.snippet || '',
+      }))
+      return { success: true, data: { query: String(p.query || ''), items, total: items.length, provider: resp.provider } }
+    },
     fetch_webpage: async (p) => ({
       success: true,
       data: await internetSearch.fetchUrl(String(p.url || '')),
@@ -207,10 +275,43 @@ function registerSearchTools(internetSearch: any): void {
   }
 }
 
+/** 注册本地文件全文搜索工具（复用 fulltext-search 的 queryFiles，离线可用） */
+function registerLocalFileSearchTool(): void {
+  toolRegistry.register({
+    name: 'local_file_search',
+    description:
+      '在本地已建立索引的文件中按关键词全文检索，返回命中文件的路径列表与内容摘要片段。' +
+      '适用于「找本机某主题的文档/代码/笔记」等离线场景；需先通过全文搜索页对目标目录建立索引。',
+    category: 'knowledge',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '检索关键词' },
+        max_results: { type: 'number', description: '返回条数，默认 10' },
+      },
+      required: ['query'],
+    },
+    execute: async (p) => {
+      try {
+        const { queryFiles } = await import('../fulltext-search')
+        const res = await queryFiles(String(p.query || ''))
+        const max = Number(p.max_results) || 10
+        const items = (res.results || []).slice(0, max).map((r) => ({
+          path: r.path,
+          filename: r.filename,
+          snippet: r.snippet,
+        }))
+        return { success: true, data: { query: String(p.query || ''), items, total: items.length } }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+  })
+}
+
 /** 注册记忆检索工具：文本 → 嵌入向量 → vectorStore 检索 */
 function registerMemoryTools(vectorStore: any): void {
   const embedQuery = async (text: string): Promise<number[]> => {
-    const { getEmbedding } = await import('../rag/embedding')
     const { embedding } = await getEmbedding(text)
     return embedding
   }
@@ -224,13 +325,15 @@ function registerMemoryTools(vectorStore: any): void {
       properties: {
         query: { type: 'string', description: '检索查询' },
         topK: { type: 'number', description: '返回条数，默认 5' },
+        namespace: { type: 'string', description: '记忆命名空间（可选）：仅检索该命名空间下的记忆，实现智能体记忆隔离' },
       },
       required: ['query'],
     },
     execute: async (p) => {
       try {
         const embedding = await embedQuery(String(p.query || ''))
-        const results = vectorStore.search(embedding, Number(p.topK) || 5)
+        const namespace = p.namespace ? String(p.namespace) : undefined
+        const results = vectorStore.search(embedding, Number(p.topK) || 5, namespace)
         return { success: true, data: results }
       } catch (e) {
         return { success: false, error: String(e) }
@@ -240,21 +343,23 @@ function registerMemoryTools(vectorStore: any): void {
 
   toolRegistry.register({
     name: 'search_memories_by_type',
-    description: '按类型（conversation/preference/fact/knowledge）语义检索本地记忆。',
+    description: '按类型（conversation/preference/fact/experience/knowledge）语义检索本地记忆。',
     category: 'knowledge',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: '检索查询' },
-        type: { type: 'string', description: '记忆类型', enum: ['conversation', 'preference', 'fact', 'knowledge'] },
+        type: { type: 'string', description: '记忆类型', enum: ['conversation', 'preference', 'fact', 'experience', 'knowledge'] },
         topK: { type: 'number', description: '返回条数，默认 5' },
+        namespace: { type: 'string', description: '记忆命名空间（可选）：仅检索该命名空间下的记忆，实现智能体记忆隔离' },
       },
       required: ['query', 'type'],
     },
     execute: async (p) => {
       try {
         const embedding = await embedQuery(String(p.query || ''))
-        const results = vectorStore.searchByType(String(p.type || 'fact'), embedding, Number(p.topK) || 5)
+        const namespace = p.namespace ? String(p.namespace) : undefined
+        const results = vectorStore.searchByType(String(p.type || 'fact'), embedding, Number(p.topK) || 5, namespace)
         return { success: true, data: results }
       } catch (e) {
         return { success: false, error: String(e) }
@@ -267,8 +372,8 @@ function registerMemoryTools(vectorStore: any): void {
  * 注册所有 ReAct 工具（由 modules.register 在启动时调用）。
  * 依赖各模块的既有能力；无干净可调用导出方法的模块跳过对应工具。
  */
-export function registerAllTools(deps: ToolDeps = {}): void {
-  const { dynamicOperationEngine, knowledgeGraph, vectorStore, voiceEngine, internetSearch } = deps
+export async function registerAllTools(deps: ToolDeps = {}): Promise<void> {
+  const { dynamicOperationEngine, knowledgeGraph, vectorStore, internetSearch } = deps
 
   // ===== 搜索类 =====
   if (internetSearch) {
@@ -342,7 +447,6 @@ export function registerAllTools(deps: ToolDeps = {}): void {
     execute: async (p) => {
       try {
         // 延迟导入，避免循环依赖与启动期重模块加载
-        const { visualAgent } = await import('../visual-agent')
         const res = await visualAgent.executeTask({
           id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           intent: String(p.intent || ''),
@@ -375,28 +479,27 @@ export function registerAllTools(deps: ToolDeps = {}): void {
     })
   }
 
-  // ===== 语音类 =====
-  if (voiceEngine && typeof voiceEngine.synthesize === 'function') {
-    toolRegistry.register({
-      name: 'speak',
-      description: '将文本转换为语音并播放。',
-      category: 'voice',
-      parameters: {
-        type: 'object',
-        properties: { text: { type: 'string', description: '要朗读的文本' } },
-        required: ['text'],
-      },
-      execute: async (p) => {
-        try {
-          await voiceEngine.synthesize(String(p.text || ''))
-          return { success: true }
-        } catch (e) { return { success: false, error: String(e) } }
-      },
-    })
-  }
+  // ===== 软件操作工具组（打开软件 / 查 App 状态，任务书 03 · A-2） =====
+  try { registerSoftwareTools() } catch (e) { logger.warn('[ToolRegistry] 软件工具注册失败:', e) }
+
+  // ===== 本地文件全文搜索（任务书 03 · A-3，复用 fulltext-search，离线可用） =====
+  try { registerLocalFileSearchTool() } catch (e) { logger.warn('[ToolRegistry] 本地文件搜索工具注册失败:', e) }
 
   // ===== 自我改造只读工具（ReAct 侧仅开放只读，写操作走流程页人工确认） =====
   try { registerSelfModifyReadonlyTools() } catch (e) { logger.warn('[ToolRegistry] 自我改造只读工具注册失败:', e) }
+
+  // ===== AI 总调度工具（§12：MetaConductor 的 ai_apps_* 五件套） =====
+  try {
+    const { registerMetaTools } = await import('./meta-conductor')
+    await registerMetaTools()
+  } catch (e) { logger.warn('[ToolRegistry] 总调度工具注册失败:', e) }
+
+  // ===== MCP 工具层（A-1：浏览器 MCP 器官 + MCP server 管理） =====
+  // 使用动态 import 而非 require：rollup 可正确解析内联/分包，避免运行时 require 路径失效
+  try {
+    const { registerMcpTools } = await import('../mcp/mcp-tools')
+    await registerMcpTools()
+  } catch (e) { logger.warn('[ToolRegistry] MCP 工具注册失败:', e) }
 
   logger.info(`[ToolRegistry] 工具注册完成，共 ${toolRegistry.size} 个`)
 }
@@ -419,7 +522,6 @@ function registerSelfModifyReadonlyTools(): void {
     },
     execute: async (p) => {
       try {
-        const { selfModifyService } = await import('../self-modify/self-modify.service')
         return { success: true, data: selfModifyService.listFiles(p.dir ? String(p.dir) : undefined) }
       } catch (e) {
         return { success: false, error: String(e) }
@@ -440,7 +542,6 @@ function registerSelfModifyReadonlyTools(): void {
     },
     execute: async (p) => {
       try {
-        const { selfModifyService } = await import('../self-modify/self-modify.service')
         return { success: true, data: selfModifyService.readFile(String(p.path || '')) }
       } catch (e) {
         return { success: false, error: String(e) }
@@ -462,7 +563,6 @@ function registerSelfModifyReadonlyTools(): void {
     },
     execute: async (p) => {
       try {
-        const { selfModifyService } = await import('../self-modify/self-modify.service')
         const files = Array.isArray(p.files)
           ? (p.files as Array<{ path?: unknown; content?: unknown; mode?: unknown }>).map((f) => ({
               path: String(f.path || ''),

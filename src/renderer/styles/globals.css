@@ -11,11 +11,12 @@
 /* ---- Design Tokens (对齐 xuanshu-ui.html) ---- */
 :root {
   /* 背景层次 - Neutral Dark */
-  --bg-base: #1a1a1c;
-  --bg-surface: #202022;
-  --bg-elevated: #28282a;
-  --bg-overlay: #303032;
-  --bg-card: rgba(40,40,42,0.8);
+  /* 表面层次（v3 仿Trae：微冷化、拉开抬升差；light/gradient 主题在下方 data-bg 另行覆盖） */
+  --bg-base: #1a1b1d;
+  --bg-surface: #202124;
+  --bg-elevated: #27282c;
+  --bg-overlay: #2f3035;
+  --bg-card: rgba(39,40,44,0.86);
   --bg-input: rgba(255,255,255,0.04);
   --bg-hover: rgba(255,255,255,0.06);
   --bg-active: rgba(255,255,255,0.08);
@@ -69,6 +70,16 @@
   --warning-dim: rgba(245,158,11,0.10);
   --violet-dim: rgba(139,92,246,0.12);
 
+  /* 任务运行状态语义色（UI-1 步骤 / UI-2 工具行 唯一真源，仿Trae） */
+  --status-pending: #7e7e88;
+  --status-running: #4b8ef1;
+  --status-running-dim: rgba(75,142,241,0.14);
+  --status-done: #3fb97b;
+  --status-done-dim: rgba(63,185,123,0.14);
+  --status-failed: #ef4444;
+  --status-failed-dim: rgba(239,68,68,0.12);
+  --status-warn: #f59e0b;
+
   /* 文字 - 中性灰阶梯 (提亮以达 WCAG AA 4.5:1) */
   --text-heading: #ececed;
   --text-primary: #e8e8ec;
@@ -110,14 +121,15 @@
   --content-max: 1120px;
 
   /* 字体 - xuanshu-ui 原版字体栈 */
-  --font-display: "Playfair Display", "Noto Serif SC", Georgia, "SimSun", serif;
-  --font-heading: "Playfair Display", "Noto Serif SC", Georgia, serif;
+  /* v3 去拟人：功能界面统一无衬线（原 Playfair 衬线不再用于功能 UI） */
+  --font-display: "Work Sans", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+  --font-heading: "Work Sans", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
   --font-ui: "Work Sans", "Noto Sans SC", "PingFang SC", sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
   --font-sans: var(--font-ui);
 
   /* 字级 (对齐 xuanshu-ui) + 层级扩展 */
-  --text-xs: 10px;
+  --text-xs: 11px; /* v3: 辅助文字下限不小于 11，仿Trae松弛感 */
   --text-sm: 12px;
   --text-base: 13px;
   --text-lg: 14px;
@@ -133,6 +145,8 @@
   --leading-snug: 1.4;
   --leading-normal: 1.55;
   --leading-relaxed: 1.7;
+  --text-prose: 15.5px;   /* v3: AI 叙述正文体感（仿Trae 15-16） */
+  --leading-prose: 1.7;
 
   /* 字距 */
   --tracking-tighter: -0.03em;
@@ -164,9 +178,14 @@
   --inset-hi: inset 0 1px 0 rgba(255,255,255,0.05);
   --inset-hi-strong: inset 0 1px 0 rgba(255,255,255,0.08);
 
-  /* 侧边栏 */
-  --sidebar-width: 240px;
-  --sidebar-collapsed: 64px;
+  /* 侧边栏（v3 仿Trae 弱化收窄） */
+  --sidebar-width: 220px;
+  --sidebar-collapsed: 56px;
+
+  /* 单栏任务流尺度（UI-1/2/4） */
+  --taskflow-max: 760px;
+  --step-row-h: 34px;
+  --proc-line-h: 26px;
 }
 
 /* ---- Reset ---- */
@@ -224,7 +243,7 @@ input, textarea, select { font-family: inherit; outline: none; border: none; bac
 }
 
 @media (max-width: 1200px) {
-  :root { --sidebar-width: 64px; }
+  :root { --sidebar-width: 56px; }
 }
 
 .app-main {
@@ -1160,3 +1179,157 @@ input, textarea, select { font-family: inherit; outline: none; border: none; bac
   0%, 100% { box-shadow: 0 0 0 0 rgba(176,176,186,0.2); }
   50% { box-shadow: 0 0 0 6px rgba(176,176,186,0); }
 }
+
+/* ============================================================
+   外观改造配置中心（第2批-4 自我改造真实化）
+   由 renderer/theme.ts 的 applyAppearance / applyUILayout 写入
+   data 属性控制，实现主题重组（深浅色/背景/圆角）+ UI 重组显隐。
+   ============================================================ */
+
+/* ---- 圆角密度 ---- */
+:root[data-radius='sharp'] {
+  --radius-xs: 0px; --radius-sm: 0px; --radius-md: 2px; --radius-lg: 4px;
+  --radius-xl: 6px; --radius-2xl: 8px; --radius-3xl: 10px;
+  --radius-16: 12px; --radius-20: 14px; --radius-24: 16px;
+  --radius-card: 4px; --radius-tag: 2px;
+}
+:root[data-radius='rounded'] {
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-xl: 18px;
+  --radius-2xl: 22px; --radius-3xl: 26px;
+  --radius-16: 30px; --radius-20: 34px; --radius-24: 40px;
+  --radius-card: 16px; --radius-tag: 10px;
+}
+
+/* ---- 背景风格：明亮浅色 ---- */
+:root[data-bg='light'] {
+  --bg-base: #eef0f3; --bg-surface: #f6f7f9; --bg-elevated: #ffffff; --bg-overlay: #ffffff;
+  --bg-card: rgba(255,255,255,0.9);
+  --bg-input: rgba(0,0,0,0.04); --bg-hover: rgba(0,0,0,0.05); --bg-active: rgba(0,0,0,0.07);
+  --bg-glass: rgba(255,255,255,0.65);
+  --border-subtle: rgba(0,0,0,0.06); --border-default: rgba(0,0,0,0.09);
+  --border-strong: rgba(0,0,0,0.12); --border-strong-hover: rgba(0,0,0,0.18);
+  --border-card: rgba(0,0,0,0.08); --border-focus: var(--accent);
+  --text-heading: #1b1d22; --text-primary: #23262c; --text-secondary: #4b525c;
+  --text-tertiary: #6b7280; --text-disabled: #9aa0aa; --text-muted: #6b7280;
+  --accent-dim: rgba(176,176,186,0.20);
+  --accent-glow: 0 0 24px rgba(176,176,186,0.28);
+  --accent-glow-lg: 0 0 40px rgba(176,176,186,0.34);
+  --accent-dim-strong: rgba(176,176,186,0.18);
+  color-scheme: light;
+}
+
+/* ---- 背景风格：深空渐变 ---- */
+:root[data-bg='gradient'] {
+  --bg-base: #13111f; --bg-surface: #191627; --bg-elevated: #201c33; --bg-overlay: #2a2540;
+  --bg-card: rgba(40,35,66,0.75);
+  --bg-input: rgba(255,255,255,0.05); --bg-hover: rgba(255,255,255,0.07); --bg-active: rgba(255,255,255,0.09);
+  --bg-glass: rgba(255,255,255,0.04);
+  --border-subtle: rgba(255,255,255,0.05); --border-default: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.12); --border-strong-hover: rgba(255,255,255,0.16);
+  --border-card: rgba(255,255,255,0.07); --border-focus: var(--accent);
+  --text-heading: #f0eef8; --text-primary: #ece9f5; --text-secondary: #b3aec9;
+  --text-tertiary: #8b86a3; --text-disabled: #56526b; --text-muted: #8b86a3;
+}
+:root[data-bg='gradient'] .app-layout {
+  background:
+    radial-gradient(1200px 600px at 20% -10%, rgba(139,92,246,0.16), transparent 60%),
+    radial-gradient(1000px 500px at 90% 110%, rgba(59,130,246,0.12), transparent 60%),
+    var(--bg-base);
+}
+
+/* ---- 背景风格：磨砂玻璃（新增 · 添加不替换。深色磨砂为主，半透明 + 1px 高光内描边） ---- */
+:root[data-bg='glass'] {
+  --bg-base: #17181c;
+  --bg-surface: rgba(255,255,255,0.055);
+  --bg-elevated: rgba(255,255,255,0.07);
+  --bg-overlay: rgba(26,27,32,0.8);
+  --bg-card: rgba(255,255,255,0.05);
+  --bg-input: rgba(255,255,255,0.06);
+  --bg-hover: rgba(255,255,255,0.08);
+  --bg-active: rgba(255,255,255,0.12);
+  --bg-glass: rgba(255,255,255,0.05);
+  --border-subtle: rgba(255,255,255,0.05);
+  --border-default: rgba(255,255,255,0.09);
+  --border-strong: rgba(255,255,255,0.14);
+  --border-strong-hover: rgba(255,255,255,0.2);
+  --border-card: rgba(255,255,255,0.08);
+  --text-heading: #f2f2f4;
+  --text-primary: #e8eaee;
+  --text-secondary: #b3b6bf;
+  --text-tertiary: #8a8d97;
+  --text-disabled: #56585f;
+  --text-muted: #8a8d97;
+  --accent-dim: rgba(176,176,186,0.16);
+  --accent-dim-strong: rgba(176,176,186,0.2);
+  --accent-glow: none;
+  --accent-glow-lg: none;
+  --shadow-card: 0 1px 1px rgba(0,0,0,0.2), 0 10px 30px rgba(0,0,0,0.28);
+  --shadow-card-hover: 0 2px 4px rgba(0,0,0,0.25), 0 16px 40px rgba(0,0,0,0.34);
+  --inset-hi: inset 0 1px 0 rgba(255,255,255,0.1);   /* 1px 高光内描边：玻璃关键质感 */
+  --inset-hi-strong: inset 0 1px 0 rgba(255,255,255,0.16);
+  color-scheme: dark;
+}
+
+/* 底层背景：低饱和深色 + 柔和光斑（克制，非霓虹） */
+:root[data-bg='glass'] .app-layout {
+  background:
+    radial-gradient(1400px 700px at 12% -10%, rgba(148,163,184,0.1), transparent 55%),
+    radial-gradient(1200px 700px at 96% 112%, rgba(120,130,160,0.08), transparent 62%),
+    linear-gradient(180deg, #181a1f, #131418);
+}
+
+/* 主窗格（侧边栏 / 标题栏 / 状态栏）：半透明磨砂 */
+:root[data-bg='glass'] .app-sidebar,
+:root[data-bg='glass'] .app-titlebar,
+:root[data-bg='glass'] .app-statusbar {
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  background: rgba(255,255,255,0.045);
+  box-shadow: var(--inset-hi);
+  border-color: rgba(255,255,255,0.07);
+}
+
+/* 卡片 / 面板 / 浮层：磨砂玻璃 */
+:root[data-bg='glass'] .card,
+:root[data-bg='glass'] .surface,
+:root[data-bg='glass'] .settings-card,
+:root[data-bg='glass'] .slide-panel,
+:root[data-bg='glass'] .modal-content,
+:root[data-bg='glass'] .stat-item,
+:root[data-bg='glass'] .toast {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--inset-hi), var(--shadow-card);
+  border-color: rgba(255,255,255,0.09);
+}
+:root[data-bg='glass'] .surface-inset {
+  background: rgba(255,255,255,0.03);
+  box-shadow: var(--inset-hi);
+}
+
+/* 输入框：玻璃输入 */
+:root[data-bg='glass'] .input,
+:root[data-bg='glass'] .input-lg,
+:root[data-bg='glass'] .input-search,
+:root[data-bg='glass'] .form-row input,
+:root[data-bg='glass'] .form-row select,
+:root[data-bg='glass'] .form-row textarea {
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  background: rgba(255,255,255,0.05);
+  box-shadow: var(--inset-hi);
+}
+
+/* 表格表头 / 设置行悬浮底色微调，贴合玻璃 */
+:root[data-bg='glass'] .table th { background: rgba(255,255,255,0.04); }
+:root[data-bg='glass'] .table tr:hover td { background: rgba(255,255,255,0.03); }
+:root[data-bg='glass'] .settings-row { border-color: rgba(255,255,255,0.05); }
+
+/* 玻璃下滚动条略微提亮，贴合半透明层 */
+:root[data-bg='glass'] ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
+:root[data-bg='glass'] ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* ---- UI 重组：模块显隐 ---- */
+:root[data-ui-sidebar='hidden'] .app-sidebar { display: none; }
+:root[data-ui-statusbar='hidden'] .app-statusbar { display: none; }
+:root[data-ui-titlebar='hidden'] .app-titlebar { display: none; }

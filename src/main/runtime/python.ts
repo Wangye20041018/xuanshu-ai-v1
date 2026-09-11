@@ -1,4 +1,4 @@
-import { app } from 'electron'
+﻿﻿import { app } from 'electron'
 import { dialog } from 'electron'
 import {join, dirname} from 'path'
 import {existsSync, mkdirSync, writeFileSync, createWriteStream, unlinkSync} from 'fs'
@@ -9,6 +9,7 @@ import AdmZip from 'adm-zip'
 import { translateWindowsPathToWSL } from './wsl-utils'
 import { logger } from '../../shared/logger'
 import { resolveResource } from '../utils/resource-resolver'
+import { createProxyAgent } from '../utils/proxy-resolver'
 
 const execAsync = promisify(exec)
 
@@ -408,7 +409,6 @@ class PythonRuntime {
   private async downloadFile(url: string, outputPath: string): Promise<void> {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 30000) // 30秒下载超时
-    const { createProxyAgent } = await import('../utils/proxy-resolver')
     const proxyAgent = createProxyAgent()
 
     try {

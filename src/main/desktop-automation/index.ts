@@ -14,6 +14,7 @@ import { getPortableDepotPath } from '../utils/resource-resolver'
 import { permissionManager } from '../permission'
 import { notifyControlStart, notifyControlFinish } from '../control-state'
 import { logger } from '../../shared/logger'
+import { authorization } from '../permission/authorization'
 
 /** 子进程默认超时（毫秒） */
 const DEFAULT_TIMEOUT_MS = 60_000
@@ -116,6 +117,7 @@ interface RiskMeta {
 const RISK_ACTIONS: Record<string, RiskMeta> = {
   'desktop-automation:elevate-self': { label: '以管理员身份重启玄枢', needsAdmin: false },
   'desktop-automation:run-elevated': { label: '以管理员身份运行程序', needsAdmin: false },
+  'desktop-automation:process-start': { label: '后台启动进程', needsAdmin: false },
   'desktop-automation:registry-write': { label: '写入注册表', needsAdmin: true },
   'desktop-automation:registry-delete': { label: '删除注册表项', needsAdmin: true },
   'desktop-automation:service-start': { label: '启动系统服务', needsAdmin: true },
@@ -172,13 +174,49 @@ async function confirmRisk(channel: string, extraDetail = ''): Promise<boolean> 
 }
 
 /** 高危通道统一防护：管理员校验 + 二次确认。返回通过状态与说明。 */
-async function guardRisk(channel: string, extraDetail?: string): Promise<{ ok: true } | { ok: false; error: string }> {
+
+/**
+ * 分级授权叠加门（#26 深度开放，叠加在「管理员校验+二次确认」之上，不替代既有确认门）
+ *
+ * 逻辑（保留底线：管理员校验与二次确认只可被「信任列表」降级，不可绕过）：
+ *   1. authorization.canAccess 校验当前授权级别（级别不足 → 拦截 + blocked 留痕）；
+ *   2. 命中信任列表（trusted=true）→ 免逐次确认，直接放行（仍过管理员校验）；
+ *   3. 未命中信任列表 → 走既有 confirmRisk 二次确认；
+ *   4. 无论结果如何，操作留痕写入 authorization 日志。
+ */
+async function authGuard(
+  channel: string,
+  action: string,
+  extraDetail?: string,
+  trustKey?: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const access = authorization.canAccess(action, 'tool', trustKey || channel)
+  if (!access.allowed) {
+    authorization.log({
+      channel: 'desktop', action, decision: 'blocked',
+      detail: `授权级别不足（当前 L${authorization.getLevel()}，需 L${access.level}）：${extraDetail || channel}`,
+    })
+    return { ok: false, error: `该操作需授权级别 L${access.level}，当前 L${authorization.getLevel()}，请在授权设置中调整` }
+  }
+
+  // 管理员校验始终保留（信任列表不豁免管理员要求）
   if (!(await requireAdminFor(channel))) {
+    authorization.log({ channel: 'desktop', action, decision: 'blocked', detail: `无管理员权限：${extraDetail || channel}` })
     return { ok: false, error: '该操作需要管理员权限，请以管理员身份重启玄枢' }
   }
+
+  // 信任列表命中 → 免逐次确认
+  if (access.trusted) {
+    authorization.log({ channel: 'desktop', action, decision: 'allow', detail: `信任列表免确认：${extraDetail || channel}` })
+    return { ok: true }
+  }
+
+  // 未命中信任列表 → 二次确认
   if (!(await confirmRisk(channel, extraDetail))) {
+    authorization.log({ channel: 'desktop', action, decision: 'deny', detail: `用户取消：${extraDetail || channel}` })
     return { ok: false, error: '用户已取消操作' }
   }
+  authorization.log({ channel: 'desktop', action, decision: 'allow', detail: extraDetail || channel })
   return { ok: true }
 }
 
@@ -280,23 +318,33 @@ export function setupDesktopAutomationHandlers(): void {
   })
 
   /* ── 高危系统级底层权限（电脑的魂，需确认/管理员）── */
+  /* 注：以下均已接入 #26 分级授权（authGuard）：级别不足拦截、信任列表免确认、操作留痕 */
 
   ipcMain.handle('desktop-automation:elevate-self', async () => {
-    const guard = await guardRisk('desktop-automation:elevate-self')
+    const guard = await authGuard('desktop-automation:elevate-self', 'process-start', '以管理员身份重启玄枢')
     if (!guard.ok) return { success: false, error: guard.error }
     return await execPython('elevate_self', [], { control: '提权重启应用' })
   })
 
   ipcMain.handle('desktop-automation:run-elevated', async (_e, path: string, args?: string) => {
-    const guard = await guardRisk('desktop-automation:run-elevated', `程序：${path}`)
+    const guard = await authGuard('desktop-automation:run-elevated', 'process-start', `以管理员身份运行程序：${path}`, path)
     if (!guard.ok) return { success: false, error: guard.error }
     const cmdArgs = [path]
     if (args) cmdArgs.push(args)
     return await execPython('run_elevated', cmdArgs, { control: `以管理员运行 ${path}` })
   })
 
+  /** 后台启动进程（#26 新增：不依赖 admin、可后台运行任意可执行文件，分级授权 L2+信任列表免确认） */
+  ipcMain.handle('desktop-automation:process-start', async (_e, appPath: string, args?: string) => {
+    const guard = await authGuard('desktop-automation:process-start', 'process-start', `后台启动进程：${appPath}`, appPath)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const cmdArgs = [appPath]
+    if (args) cmdArgs.push(args)
+    return await execPython('process_start', cmdArgs, { control: `后台启动 ${appPath}` })
+  })
+
   ipcMain.handle('desktop-automation:registry-write', async (_e, key: string, subkey: string, name: string, value: string, valueType?: string) => {
-    const guard = await guardRisk('desktop-automation:registry-write', `${key}\\${subkey} ${name}`)
+    const guard = await authGuard('desktop-automation:registry-write', 'registry-write', `${key}\\${subkey} ${name}`)
     if (!guard.ok) return { success: false, error: guard.error }
     const cmdArgs = [key, subkey, name, value]
     if (valueType) cmdArgs.push(valueType)
@@ -304,60 +352,42 @@ export function setupDesktopAutomationHandlers(): void {
   })
 
   ipcMain.handle('desktop-automation:registry-delete', async (_e, key: string, subkey: string, name?: string) => {
-    if (!(await requireAdminFor('desktop-automation:registry-delete'))) {
-      return { success: false, error: '该操作需要管理员权限' }
-    }
-    if (!(await confirmRisk('desktop-automation:registry-delete', `${key}\\${subkey} ${name || ''}`))) {
-      return { success: false, error: '用户已取消操作' }
-    }
+    const guard = await authGuard('desktop-automation:registry-delete', 'registry-write', `${key}\\${subkey} ${name || ''}`)
+    if (!guard.ok) return { success: false, error: guard.error }
     const cmdArgs = [key, subkey]
     if (name) cmdArgs.push(name)
     return await execPython('registry_delete', cmdArgs, { control: '删除注册表项' })
   })
 
   ipcMain.handle('desktop-automation:service-start', async (_e, name: string) => {
-    if (!(await requireAdminFor('desktop-automation:service-start'))) {
-      return { success: false, error: '该操作需要管理员权限' }
-    }
-    if (!(await confirmRisk('desktop-automation:service-start', `服务：${name}`))) {
-      return { success: false, error: '用户已取消操作' }
-    }
+    const guard = await authGuard('desktop-automation:service-start', 'service-start', `启动服务：${name}`, name)
+    if (!guard.ok) return { success: false, error: guard.error }
     return await execPython('service_start', [name], { control: `启动服务 ${name}` })
   })
 
   ipcMain.handle('desktop-automation:service-stop', async (_e, name: string) => {
-    if (!(await requireAdminFor('desktop-automation:service-stop'))) {
-      return { success: false, error: '该操作需要管理员权限' }
-    }
-    if (!(await confirmRisk('desktop-automation:service-stop', `服务：${name}`))) {
-      return { success: false, error: '用户已取消操作' }
-    }
+    const guard = await authGuard('desktop-automation:service-stop', 'service-stop', `停止服务：${name}`, name)
+    if (!guard.ok) return { success: false, error: guard.error }
     return await execPython('service_stop', [name], { control: `停止服务 ${name}` })
   })
 
   ipcMain.handle('desktop-automation:env-var-set', async (_e, name: string, value: string, scope?: string) => {
-    if (!(await confirmRisk('desktop-automation:env-var-set', `变量：${name}=${value} (${scope || 'USER'})`))) {
-      return { success: false, error: '用户已取消操作' }
-    }
+    const guard = await authGuard('desktop-automation:env-var-set', 'env-var-set', `变量：${name}=${value} (${scope || 'USER'})`, name)
+    if (!guard.ok) return { success: false, error: guard.error }
     const cmdArgs = [name, value]
     if (scope) cmdArgs.push(scope)
     return await execPython('env_var_set', cmdArgs, { control: '修改环境变量' })
   })
 
   ipcMain.handle('desktop-automation:process-kill', async (_e, target: string) => {
-    if (!(await confirmRisk('desktop-automation:process-kill', `目标：${target}`))) {
-      return { success: false, error: '用户已取消操作' }
-    }
+    const guard = await authGuard('desktop-automation:process-kill', 'process-kill', `结束进程：${target}`, target)
+    if (!guard.ok) return { success: false, error: guard.error }
     return await execPython('process_kill', [target], { control: `结束进程 ${target}` })
   })
 
   ipcMain.handle('desktop-automation:task-schedule', async (_e, name: string, command: string, trigger?: string, time?: string) => {
-    if (!(await requireAdminFor('desktop-automation:task-schedule'))) {
-      return { success: false, error: '该操作需要管理员权限' }
-    }
-    if (!(await confirmRisk('desktop-automation:task-schedule', `任务：${name} → ${command}`))) {
-      return { success: false, error: '用户已取消操作' }
-    }
+    const guard = await authGuard('desktop-automation:task-schedule', 'task-schedule', `计划任务：${name} → ${command}`, name)
+    if (!guard.ok) return { success: false, error: guard.error }
     const cmdArgs = [name, command, trigger || 'daily']
     if (time) cmdArgs.push(time)
     return await execPython('task_schedule', cmdArgs, { control: '创建计划任务' })

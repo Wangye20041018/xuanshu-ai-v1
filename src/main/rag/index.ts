@@ -14,7 +14,7 @@ export { vectorStore }
 export async function searchContext(
   query: string,
   options: { topK?: number } = {}
-): Promise<{ items: Array<{ id: string; content: string; score: number; type: string }> }> {
+): Promise<{ items: Array<{ id: string; content: string; score: number; type: string; source?: string }> }> {
   try {
     const { embedding } = await getEmbedding(query)
     const results = vectorStore.search(embedding, options.topK ?? 5)
@@ -24,6 +24,8 @@ export async function searchContext(
         content: r.text,
         score: r.score,
         type: r.metadata.type,
+        // A-3：透传来源（文件路径 / URL / 来源标识），供引用段落 + 来源文件展示
+        source: r.metadata.source,
       })),
     }
   } catch (error) {
@@ -33,10 +35,10 @@ export async function searchContext(
 }
 
 /** Memory 模块的三种类型 */
-const MEMORY_TYPES = ['conversation', 'preference', 'fact'] as const
+const MEMORY_TYPES = ['conversation', 'preference', 'fact', 'experience'] as const
 
 export function setupRAGHandlers(): void {
-  ipcMain.handle('rag:add-memory', async (_event, content: string, tags: string[] = [], memoryType: 'conversation' | 'preference' | 'fact' = 'conversation') => {
+  ipcMain.handle('rag:add-memory', async (_event, content: string, tags: string[] = [], memoryType: 'conversation' | 'preference' | 'fact' | 'experience' = 'conversation', namespace?: string) => {
     try {
       const chunks = splitText(content)
       const results = []
@@ -61,7 +63,8 @@ export function setupRAGHandlers(): void {
           type: memoryType,
           tags,
           timestamp: Date.now(),
-          memoryId: memoryId || undefined
+          memoryId: memoryId || undefined,
+          namespace
         })
         results.push(id)
       }
@@ -73,7 +76,7 @@ export function setupRAGHandlers(): void {
     }
   })
 
-  ipcMain.handle('rag:add-knowledge', async (_event, content: string, tags: string[] = [], source?: string) => {
+  ipcMain.handle('rag:add-knowledge', async (_event, content: string, tags: string[] = [], source?: string, namespace?: string) => {
     try {
       const chunks = splitText(content)
       const results = []
@@ -84,7 +87,8 @@ export function setupRAGHandlers(): void {
         vectorStore.add(id, chunk, embedding, {
           type: 'knowledge',
           tags,
-          source
+          source,
+          namespace
         })
         results.push(id)
       }
@@ -198,7 +202,9 @@ export function setupRAGHandlers(): void {
           id: r.id,
           text: r.text.substring(0, 100) + '...',
           score: r.score,
-          type: r.metadata.type
+          type: r.metadata.type,
+          // A-3：来源文件/URL（引用段落 + 来源文件展示）
+          source: r.metadata.source,
         }))
       }
     } catch (error) {

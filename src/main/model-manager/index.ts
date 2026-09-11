@@ -8,7 +8,7 @@ import { POWERSHELL_EXE } from '../utils/powershell'
 import { pythonRuntime } from '../runtime/python'
 import { cpuInferenceEngine, CpuInferenceEngine, isGpuAvailable, CpuInferenceConfig } from '../inference/cpu-engine'
 import { stopSGLang, startSGLangServer } from '../ipc/sglang.ipc'
-import { getHardware, resolveModelRuntime, HardwareInfo } from '../runtime/hardware'
+import { getHardware, resolveModelRuntime, HardwareInfo, type ModelRunLocation } from '../runtime/hardware'
 
 import { createLogger } from '../utils/logging'
 import { getStore } from '../ipc/config.ipc'
@@ -46,6 +46,10 @@ interface ModelInfo {
   gpuLayers?: number
   /** 显式推理模式：cpu=纯 CPU（不参与 GPU 显存判定），gpu/缺省=自动 */
   mode?: 'gpu' | 'cpu'
+  /** 运行位置（用户显式设置）：auto 自动 / cpu 纯CPU / gpu 纯GPU / layered 分层 */
+  runLocation?: ModelRunLocation
+  /** 上下文长度（推理时生效） */
+  contextSize?: number
   path: string
   /** 视觉模型专用：mmproj 投影文件路径 */
   mmprojPath?: string
@@ -59,25 +63,25 @@ interface ModelInfo {
 }
 
 interface MemoryStats {
-  total: number
-  used: number
-  free: number
+  total: number | null
+  used: number | null
+  free: number | null
   modelMemory: number
-  systemMemory: number
+  systemMemory: number | null
 }
 
 interface GPUStats {
-  usage: number
-  memoryUsed: number
-  memoryTotal: number
+  usage: number | null
+  memoryUsed: number | null
+  memoryTotal: number | null
 }
 
 interface PerformanceStats {
-  cpu: number
+  cpu: number | null
   memory: MemoryStats
   gpu: GPUStats
-  modelLatency: number
-  throughput: number
+  modelLatency: number | null
+  throughput: number | null
 }
 
 interface CurrentModel {
@@ -108,14 +112,15 @@ class ModelManager {
 
   // === llama.cpp Server 模式 v10.2.0 ===
   // v12.3 端口动态探测：TandemManager 的 llama-server 常驻 8082，8080 保留为备用
-  private readonly SERVER_PORTS = [8082, 8080]
+  // v2: 实际端口由 TandemManager 按需递增分配（当前实例已到 8089），静态列表只覆盖
+  // 常用起点 + 已见到的递增端口，超出部分由 isServerRunning 动态补充扫描兜底。
+  private readonly SERVER_PORTS = [8082, 8080, 8081, 8083, 8084, 8085, 8086, 8087, 8088, 8089]
   private readonly SERVER_HOST = '127.0.0.1'
   private activeServerPort: number | null = null
 
   // 性能追踪：记录最近N次推理的延迟和token数
   private _latencyHistory: number[] = []  // 最近20次推理延迟(ms)
-  // @ts-expect-error TS6133 - _tokenCountHistory reserved for future use
-  private _tokenCountHistory: number[] = [] // 最近20次推理输出token数
+  private _tokenCountHistory: number[] = [] // 最近20次推理输出token数（M-4 真实token计数源）
   private readonly _MAX_HISTORY = 20
 
   // === 显存调度 v2 ===
@@ -123,9 +128,9 @@ class ModelManager {
   private visionModelInMemory: ModelInfo | null = null
   // v11.0 当前GPU状态：main=Qwen3.5-9B 常驻；vision=方案Y 兜底；null=空闲
   private gpuModelType: GpuModelType = null
-  // v11.0 单模型常驻：Qwen3.5-9B 为主力模型
-  private defaultMainModelId: string = 'qwen3.5-9b'   // Qwen3.5-9B Q4_K_M（~5.29GB）
-  private visionModelId: string = 'qwen3.5-9b'         // 与底座同体
+  // v13.0 单模型常驻：qwen-coder-9b（Qwopus3.5-9B-Coder-MTP）为主力模型
+  private defaultMainModelId: string = 'qwen-coder-9b'
+  private visionModelId: string = 'qwen2-vl-2b'         // 独立 2B 视觉模型
   // v12.1 双模型机制：轻量模型（如2B）常驻内存待命，独立 CPU 引擎，不参与主槽位换载
   private standbyModelId: string | null = null
   private standbyEngine: CpuInferenceEngine = new CpuInferenceEngine()
@@ -241,6 +246,8 @@ class ModelManager {
         }
         const cpuLoaded = await cpuInferenceEngine.loadModel(loadOpts as CpuInferenceConfig)
         if (cpuLoaded) {
+          // 结构化上下文·真实内存态：若此前同模型被 migrateToRAM 停车，恢复暂挂对话上下文（续聊不丢）
+          cpuInferenceEngine.restoreParkedIfSame(model.path)
           this.currentModel = {
             modelId: model.id,
             modelName: model.name,
@@ -355,9 +362,10 @@ class ModelManager {
         await new Promise(resolve => setTimeout(resolve, 2000))
       }
 
-      // GPU 优先
+      // GPU 优先（显式纯 CPU 运行位置时直接跳过 GPU/SGLang 路径，直走 node-llama-cpp CPU）
+      const forcedCpu = model.runLocation === 'cpu' || model.mode === 'cpu'
       const gpuStatus = await isGpuAvailable()
-      if (gpuStatus.available) {
+      if (!forcedCpu && gpuStatus.available) {
         logger.debug(`[ModelManager] GPU 可用 (${gpuStatus.vramMB}MB)，优先尝试 SGLang: ${model.name}`)
 
         // WSL2 探测（幂等）：决定 SGLang 经 WSL 内 Linux Python 启动还是回退 CPU
@@ -397,10 +405,10 @@ class ModelManager {
             logger.debug(`[ModelManager] SGLang(WSL) GPU 加载成功: ${model.name}`)
             return true
           }
-          logger.debug('[ModelManager] SGLang(WSL) 启动失败，回退 CPU')
+          logger.debug('[ModelManager] SGLang(WSL) 备用路径启动失败，回退 node-llama-cpp 备用引擎；实际主推理由 tandem llama-server 承担，不影响 GPU 运行')
         } else {
           // v10.2：无 WSL2 时静默回退 CPU，不再弹窗打扰（SGLang 为可选 GPU 加速，非必需）
-          logger.debug('[ModelManager] 未启用 WSL2，SGLang GPU 推理不可用，静默回退 CPU 模式（应用仍可正常运行）')
+          logger.debug('[ModelManager] 未启用 WSL2，SGLang 可选加速路径不可用（非必需）；主引擎走 tandem llama-server GPU，此日志不代表模型运行在 CPU')
         }
 
         // 统一回退：记录 GPU 模型类型并回退 CPU 推理
@@ -455,8 +463,14 @@ class ModelManager {
       }
 
       // 释放 CPU 引擎模型（GPU 由 SGLang 管理，CPU 由 node-llama-cpp 管理）
+      // 结构化上下文·真实内存态：优先 migrateToRAM 停车（保留对话上下文供同模型恢复续聊），
+      // 仅当引擎从未加载或卸载为最终卸载时，才真正释放资源
       try {
-        await cpuInferenceEngine.unload()
+        const parked = await cpuInferenceEngine.migrateToRAM()
+        if (!parked) {
+          await cpuInferenceEngine.unload()
+          logger.debug('未停车（引擎本未加载），已直接释放 CPU 引擎资源')
+        }
       } catch (cpuError) {
         logger.error(`释放 CPU 引擎时出错: ${cpuError}`)
       }
@@ -565,7 +579,7 @@ class ModelManager {
     try {
       const gpuStats = await this.getGPUStats()
 
-      if (gpuStats.memoryTotal === 0) {
+      if (gpuStats.memoryTotal === null || gpuStats.memoryUsed === null || gpuStats.memoryTotal === 0) {
         return
       }
 
@@ -597,43 +611,45 @@ class ModelManager {
       return {
         total: totalMem,
         used: usedMem,
-        free: totalMem - usedMem,
+        free: totalMem !== null && usedMem !== null ? totalMem - usedMem : null,
         modelMemory: modelMem,
-        systemMemory: usedMem - modelMem,
+        systemMemory: totalMem !== null && usedMem !== null ? usedMem - modelMem : null,
       }
     } catch (error) {
       logger.error(`getMemoryStats error: ${error}`)
-      return { total: 8192, used: 4096, free: 4096, modelMemory: 0, systemMemory: 4096 }
+      // M-5 修复：失败返回 null，禁止回填假值
+      return { total: null, used: null, free: null, modelMemory: 0, systemMemory: null }
     }
   }
 
-  private async getTotalMemory(): Promise<number> {
+  private async getTotalMemory(): Promise<number | null> {
     try {
       const { stdout } = await execAsync(
         `"${POWERSHELL_EXE}" -Command "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"`,
       )
       const value = parseInt(stdout.trim(), 10)
-      return value ? value / 1024 / 1024 : 8192
+      return value && value > 0 ? value / 1024 / 1024 : null
     } catch (e) {
       logger.error(`[ModelManager] 获取系统总内存失败: ${e}`)
-      return 8192
+      return null
     }
   }
 
   // 双重除法修复
   // FreePhysicalMemory 返回 KB, 已转 MB
   // 原: total - free / 1024 (又除一次) → 改为: total - free
-  private async getUsedMemory(): Promise<number> {
+  private async getUsedMemory(): Promise<number | null> {
     try {
       const { stdout } = await execAsync(
         `"${POWERSHELL_EXE}" -Command "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"`,
       )
       const free = parseInt(stdout.trim(), 10) / 1024
       const total = await this.getTotalMemory()
-      return free ? total - free : total * 0.5
+      if (free && total) return total - free
+      return null
     } catch (e) {
       logger.error(`[ModelManager] 获取系统已用内存失败: ${e}`)
-      return 4096
+      return null
     }
   }
 
@@ -697,12 +713,12 @@ class ModelManager {
   }
 
   private getThroughput(): number {
-    // 吞吐量 = 最近N次推理平均每秒处理token数（基于输出长度估算）
-    if (this._latencyHistory.length === 0) return 0
+    // M-4/F-2 修复：吞吐量取最近N次推理的真实 token 数（_tokenCountHistory）与真实耗时，禁止硬编码 200 估算
+    if (this._tokenCountHistory.length === 0 || this._latencyHistory.length === 0) return 0
+    const avgTokens = this._tokenCountHistory.reduce((a, b) => a + b, 0) / this._tokenCountHistory.length
     const avgLatencyMs = this._latencyHistory.reduce((a, b) => a + b, 0) / this._latencyHistory.length
-    // 假设平均输出 200 tokens，计算 tokens/s
-    const avgTokensPerCall = 200
-    return Math.round(avgTokensPerCall / (avgLatencyMs / 1000))
+    if (avgTokens <= 0 || avgLatencyMs <= 0) return 0
+    return Math.round((avgTokens / (avgLatencyMs / 1000)) * 10) / 10
   }
 
   /* ==========================================================
@@ -847,10 +863,19 @@ class ModelManager {
       }
 
       logger.info(`[ModelManager] 加载待命模型到内存: ${model.name}`)
+      // 待命模型运行位置遵循用户显式设置：
+      // - auto/cpu：固定纯 CPU 常驻 RAM（不与主模型抢占显存，保持原行为）
+      // - gpu：全部层 offload 至显存（node-llama-cpp 支持 GPU 分层）
+      // - layered：按用户指定层数 offload 至显存，其余层走内存
+      const standbyLoc = model.runLocation ?? 'auto'
+      let standbyGpuLayers = 0
+      if (standbyLoc === 'gpu') standbyGpuLayers = Math.max(1, model.gpuLayers ?? 99)
+      else if (standbyLoc === 'layered') standbyGpuLayers = Math.max(1, Math.min(99, model.gpuLayers ?? 1))
+      logger.info(`[ModelManager] 待命模型运行位置: ${standbyLoc} → gpuLayers=${standbyGpuLayers}`)
       const ok = await this.standbyEngine.loadModel({
         modelPath: model.path,
-        gpuLayers: 0,                // 待命模型固定纯 CPU，常驻 RAM
-        contextSize: 2048,           // 轻量待命，小上下文省内存
+        gpuLayers: standbyGpuLayers,
+        contextSize: model.contextSize || 2048,
         threads: 4,
       })
       if (!ok) {
@@ -938,6 +963,8 @@ class ModelManager {
   async generateResponse(prompt: string, opts?: { temperature?: number; maxTokens?: number; topP?: number; topK?: number; repeatPenalty?: number }): Promise<string> {
     this.isGenerating = true
     const startTime = performance.now()
+    // F-2 修复：本次推理真实输出 token 数（来自引擎 usage，无则 null 不估算）
+    let lastCompletionTokens: number | null = null
 
     // 从 modelConfig 读取默认参数，优先级：opts 传入值 > modelConfig > 硬编码默认值
     let modelConfig: any = {}
@@ -959,8 +986,9 @@ class ModelManager {
       if (serverRunning) {
         const serverResult = await this.generateViaServer(prompt, mergedOpts)
         if (serverResult !== null) {
-          logger.debug(`[ModelManager] Server 模式推理成功 (${serverResult.length} 字符)`)
-          return serverResult
+          lastCompletionTokens = serverResult.tokens || null
+          logger.debug(`[ModelManager] Server 模式推理成功 (${serverResult.text.length} 字符)`)
+          return serverResult.text
         }
         logger.debug('[ModelManager] Server 推理失败，回退直调模式')
       }
@@ -1035,10 +1063,14 @@ class ModelManager {
       logger.error(`[ModelManager] generateResponse 推理失败: ${e}`)
       return `[推理失败：模型未就绪，请先在模型页面加载模型]`
     } finally {
-      // 记录推理性能指标
+      // 记录推理性能指标（F-2 修复：token 数来自引擎真实 usage，null 则不记录假值）
       const elapsed = performance.now() - startTime
       this._latencyHistory.push(elapsed)
       if (this._latencyHistory.length > this._MAX_HISTORY) this._latencyHistory.shift()
+      if (lastCompletionTokens !== null && lastCompletionTokens > 0) {
+        this._tokenCountHistory.push(lastCompletionTokens)
+        if (this._tokenCountHistory.length > this._MAX_HISTORY) this._tokenCountHistory.shift()
+      }
       this.isGenerating = false
       this.resetIdleTimer()
     }
@@ -1261,6 +1293,19 @@ class ModelManager {
         }
       } catch { /* 继续探测下一个端口 */ }
     }
+    // v2: Tandem 端口按需递增可能超出静态列表，补充扫描 8090-8100 兜底
+    // （无监听端口连接拒绝即秒失败，健康检查超时也仅 800ms，实际开销可忽略）
+    for (let port = 8090; port <= 8100; port++) {
+      try {
+        const resp = await fetch(`http://${this.SERVER_HOST}:${port}/health`, {
+          signal: AbortSignal.timeout(800),
+        })
+        if (resp.status < 500) {
+          this.activeServerPort = port
+          return true
+        }
+      } catch { /* 继续 */ }
+    }
     return false
   }
 
@@ -1289,7 +1334,7 @@ class ModelManager {
   private async generateViaServer(
     prompt: string,
     opts?: { temperature?: number; maxTokens?: number; topP?: number; topK?: number; repeatPenalty?: number }
-  ): Promise<string | null> {
+  ): Promise<{ text: string; tokens: number } | null> {
     try {
       const baseUrl = this.getServerBaseUrl() || (await this.isServerRunning() ? this.getServerBaseUrl() : null)
       if (!baseUrl) return null
@@ -1319,12 +1364,64 @@ class ModelManager {
       }
 
       const data = await resp.json() as any
-      const text = data?.choices?.[0]?.text || data?.content || ''
-      return text
+      let text = data?.choices?.[0]?.text || data?.content || ''
+      let tokens = Number.isFinite(data?.usage?.completion_tokens) ? (data.usage.completion_tokens as number) : 0
+
+      // P0-3 修复：llama.cpp /v1/completions 对部分中文长 prompt（含 `[系统]:/[用户]:` 内联角色标签）
+      // 会返回 0 token（finish=stop）而 /v1/chat/completions（走 chat 模板）则正常生成。
+      // 遇空结果自动 fallback 到 chat/completions，避免 agent/对话链路静默空返回。
+      if (!text || String(text).length === 0) {
+        const fbMsgs = this.parsePromptMessages(prompt)
+        const fbBody = {
+          model: 'x',
+          messages: fbMsgs,
+          temperature: opts?.temperature ?? 0.7,
+          max_tokens: opts?.maxTokens ?? 1024,
+          top_p: opts?.topP ?? 0.9,
+          top_k: opts?.topK ?? 40,
+          repeat_penalty: opts?.repeatPenalty ?? 1.1,
+          stream: false,
+        }
+        try {
+          const fbResp = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(fbBody),
+            signal: AbortSignal.timeout(120000),
+          })
+          if (fbResp.ok) {
+            const fbData = await fbResp.json().catch(() => null) as any
+            const fbText = fbData?.choices?.[0]?.message?.content
+            if (fbText && String(fbText).length > 0) {
+              text = fbText
+              tokens = Number.isFinite(fbData?.usage?.completion_tokens) ? (fbData.usage.completion_tokens as number) : 0
+              logger.info(`[ModelManager] completion 空结果已由 chat/completions 回退成功 (${text.length} 字符)`)
+            }
+          }
+        } catch (fbErr) {
+          logger.warn(`[ModelManager] chat/completions 回退失败: ${fbErr}`)
+        }
+      }
+
+      // F-2 修复：从引擎返回中取真实 completion_tokens（无则记录 null，禁止假估算）
+      return { text, tokens }
     } catch (error) {
       logger.warn(`[ModelManager] Server HTTP 调用失败，回退直调模式: ${error}`)
       return null
     }
+  }
+
+  /** P0-3: 将含 `[系统]:`/`[用户]:` 内联角色标签的 prompt 拆分为 messages，供 chat/completions 回退使用 */
+  private parsePromptMessages(prompt: string): Array<{ role: string; content: string }> {
+    const sysMatch = prompt.match(/^\[\s*系统\s*\]:\s*([\s\S]*?)(?=\n\[\s*用户\s*\]:)/)
+    if (sysMatch) {
+      const system = sysMatch[1].trim()
+      const rest = prompt.slice(sysMatch[0].length).replace(/^\n/, '').replace(/^\[\s*用户\s*\]:\s?/, '').trim()
+      const msgs: Array<{ role: string; content: string }> = [{ role: 'system', content: system }]
+      if (rest) msgs.push({ role: 'user', content: rest })
+      return msgs
+    }
+    return [{ role: 'user', content: prompt }]
   }
 
   /**
@@ -1818,11 +1915,12 @@ export function setupModelManagerHandlers(): void {
         // 获取硬件信息用于设备适配
         let device: any = undefined
         try {
-          const hw = await import('../runtime/hardware').then(m => m.getHardware())
+          const hw = await getHardware()
+          const memStats = await modelManager.getMemoryStats()
           device = {
             gpuName: hw?.gpuName || '无 GPU',
             vramGB: (hw?.vramMB || 0) / 1024,
-            ramGB: (await modelManager.getMemoryStats()).total / 1024,
+            ramGB: (memStats?.total ?? 0) / 1024,
             cpuCores: hw?.cpuCores || 4,
             hasGPU: (hw?.vramMB || 0) > 0,
           }

@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { logger } from '../../shared/logger'
+import { createProxyAgent } from '../utils/proxy-resolver'
 
 interface ImageGenerationResult {
   success: boolean
@@ -319,7 +320,6 @@ class ExternalAIClient {
   private async fetchWithTimeout(url: string, options: RequestInit, timeout: number): Promise<Response> {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeout)
-    const { createProxyAgent } = await import('../utils/proxy-resolver')
     const agent = createProxyAgent()
     const fetchOptions: RequestInit & { dispatcher?: any } = { ...options, signal: controller.signal }
     if (agent) fetchOptions.dispatcher = agent

@@ -33,7 +33,6 @@ import { knowledgeGraph } from './knowledge-graph'
 import { vectorStore } from './rag/vector-store'
 import { voiceEngine } from './voice-engine'
 import { externalAIClient } from './external-ai'
-import { voiceWakeService } from './wake'
 import { personalization } from './personalization'
 import { mobileChannelEngine } from './mobile-channel'
 import { modelRegistry } from './model-registry'
@@ -93,7 +92,7 @@ app.whenReady().then(async () => {
 
   // IPC Handler 注册
   setupAllIpcHandlers({
-    modelManager, voiceEngine, voiceWakeService, externalAIClient,
+    modelManager, voiceEngine, externalAIClient,
     dynamicOperationEngine, knowledgeGraph, vectorStore,
     visionModel, personaLoader, mainWindow: null,
     performanceProfiler,
@@ -112,7 +111,7 @@ app.whenReady().then(async () => {
   // 模块初始化
   await initializeAllModules({
     mainWindow: null, personaLoader, dynamicOperationEngine, knowledgeGraph,
-    vectorStore, voiceEngine, externalAIClient, voiceWakeService,
+    vectorStore, voiceEngine, externalAIClient,
     personalization, mobileChannelEngine, modelRegistry, modelManager,
     visionModel, permissionManager, pythonRuntime,
     deviceOptimizer, processGuardian, performanceProfiler,
@@ -146,19 +145,16 @@ app.whenReady().then(async () => {
   // 按配置启动悬浮球 / 粒子球（C 章：设置页开关 + 托盘入口）
   try {
     const cfg = getAppConfig()
-    if (cfg?.floatingBallEnabled) {
+    if (cfg?.floatingBallEnabled && cfg?.floatingBallAutoStart) {
       const ball = createFloatingBall()
       ball.show()
-      writeLog('悬浮球已按配置启动')
+      writeLog('悬浮球已按配置启动（语音交互球就绪）')
     }
   } catch (e) {
     writeLog(`Auto-start floating ball failed: ${e}`)
   }
 
-  // 语音唤醒服务
-  if (process.argv.includes('--wake-service')) {
-    try { await voiceWakeService.start() } catch (e) { console.error(`Voice wake service start failed: ${e}`) }
-  }
+  // 语音唤醒服务已随 §6.1 移除（不做降级）
 
   // 生命周期
   app.on('activate', function () {
@@ -182,7 +178,7 @@ app.whenReady().then(async () => {
 /* ==================== 退出清理 ==================== */
 setupBeforeQuit({
   pythonRuntime, processGuardian, vectorStore, deviceOptimizer,
-  voiceWakeService, modelManager, mobileChannelEngine, personalization,
+  modelManager, mobileChannelEngine, personalization,
   voiceEngine, knowledgeGraph, dynamicOperationEngine, visionModel,
 })
 
@@ -204,5 +200,3 @@ export function getMainWindow(): Electron.BrowserWindow | null {
   if (win) _mainWindow = win
   return win || null
 }
-
-export default _mainWindow

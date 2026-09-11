@@ -1,22 +1,52 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
-import { Mic, ChevronLeft, ArrowUp, MessageSquare, Trash2, X, Check, Pencil, Plus, Volume2, Copy, Paperclip, Globe } from 'lucide-react'
+import { ChevronLeft, ArrowUp, MessageSquare, Trash2, X, Check, Pencil, Plus, Volume2, Copy, Paperclip, Globe, FileDown, Pause, Play, Square, Loader2, Image as ImageIcon } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
-import type { TandemMode } from './messageRender'
 import {
   parseMessageContent, renderInlineFormatted, messageVariants,
-  CodeWindow, TableCard, UserAvatar, TypingDots, TandemResultCard,
+  CodeWindow, TableCard, UserAvatar, TandemResultCard, ReasoningBlock, MarkdownHeading,
 } from './messageRender'
 import FileCard from '../../components/FileCard'
 import ImageCard from '../../components/ImageCard'
 import ModelSwitcher from '../../components/ModelSwitcher'
 import ContextIndicator from '../../components/ContextIndicator'
 import TaskCard, { type TaskCardData } from '../../components/TaskCard'
+import TaskRunTimeline from '../../components/taskflow/TaskRunTimeline'
+import { COLORS, HEX_COLORS } from '../../shared/theme'
 
 interface ChatMessageItem {
   id: string
   role: 'user' | 'assistant'
   content: string
+  reasoning?: string
   timestamp?: number
+  // A批7：生成统计（真实可算，UI 以「约」标注 token 估算）
+  tokenEstimate?: number
+  elapsedMs?: number
+  charCount?: number
+  // F批：用户消息附件（真实路径，来源 getPathForFile），发送时构造 multi-part 内容数组
+  files?: Array<{ path: string; type: string; name?: string }>
+}
+
+/** F批：输入区待发送附件（拖拽/粘贴进入，发送前暂存展示缩略） */
+export interface AttachmentItem {
+  id: string
+  path: string
+  type: 'image' | 'file'
+  name: string
+  mime?: string
+}
+
+// A批7：把真实生成统计排版为紧凑徽标串（token 为字符数估算，标注「约」；耗时/速度由真实计时得出）
+function formatStatBadge(m: ChatMessageItem): string | null {
+  if (m.elapsedMs == null && m.tokenEstimate == null) return null
+  const parts: string[] = []
+  if (m.tokenEstimate != null) parts.push(`约 ${m.tokenEstimate} tokens`)
+  if (m.elapsedMs != null) parts.push(`${(m.elapsedMs / 1000).toFixed(1)}s`)
+  if (m.tokenEstimate != null && m.elapsedMs != null && m.elapsedMs > 0) {
+    parts.push(`~${Math.round(m.tokenEstimate / (m.elapsedMs / 1000))} tok/s`)
+  }
+  if (m.charCount != null) parts.push(`${m.charCount} 字`)
+  return parts.join(' · ')
 }
 
 interface Conversation {
@@ -41,21 +71,23 @@ interface ChatPanelProps {
   speakingId: string | null
   input: string
   setInput: React.Dispatch<React.SetStateAction<string>>
-  isRecording: boolean
   isFocused: boolean
   setIsFocused: (v: boolean) => void
   handleSend: () => void
   handleStop: () => void
-  startRecording: () => void
-  stopRecording: () => void
   handleSpeakMessage: (msgId: string, text: string) => void
-  tandemMode: TandemMode | null
-  setTandemMode: (m: TandemMode | null) => void
+  speakingPaused: boolean
+  togglePauseSpeaking: () => void
+  stopSpeaking: () => void
   onTaskAppend?: (task: TaskCardData) => void
   onTaskEnd?: (task: TaskCardData) => void
-  contextStats: ContextStats
+  contextStats: ContextStats | null
   historyOpen: boolean
   setHistoryOpen: (v: boolean) => void
+  // F批：输入区附件（拖拽/粘贴暂存，发送前展示缩略与移除）
+  attachments: AttachmentItem[]
+  onAddAttachments: (files: File[]) => void
+  onRemoveAttachment: (id: string) => void
   conversations: Conversation[]
   currentConversationId: string | null
   createConversation: () => void
@@ -88,16 +120,17 @@ function formatRelativeTime(ts?: number): string {
 export default function ChatPanel(props: ChatPanelProps) {
   const {
     messages, isStreaming, speakingId,
-    input, setInput, isRecording, isFocused, setIsFocused,
-    handleSend, handleStop, startRecording, stopRecording,
-    handleSpeakMessage,
-    tandemMode, setTandemMode, contextStats,
+    input, setInput, isFocused, setIsFocused,
+    handleSend, handleStop,
+    handleSpeakMessage, speakingPaused, togglePauseSpeaking, stopSpeaking,
+    contextStats,
     onTaskAppend, onTaskEnd,
     historyOpen, setHistoryOpen,
     conversations, currentConversationId,
     createConversation, switchConversation, deleteConversation,
     editingConvId, editTitle, setEditTitle,
     handleStartRename, handleConfirmRename, handleCancelRename,
+    attachments, onAddAttachments, onRemoveAttachment,
   } = props
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -105,19 +138,23 @@ export default function ChatPanel(props: ChatPanelProps) {
   // 复制反馈：短暂显示「已复制」；删除二次确认：避免误触破坏性操作
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  // 导出菜单：记录当前展开导出菜单的消息 id；导出中状态避免重复点击
+  const [exportMenuId, setExportMenuId] = useState<string | null>(null)
+  const [exportingId, setExportingId] = useState<string | null>(null)
   // 用户是否贴近消息列表底部（用于智能自动滚动：贴近时跟随新消息，上翻阅读时不被强制拉回）
   const [isNearBottom, setIsNearBottom] = useState(true)
   // 拖拽文件悬停高亮：给用户明确的「可拖入」反馈
   const [dragOver, setDragOver] = useState(false)
   // 联网搜索开关：开启后发送消息时自动补充实时搜索结果作为上下文
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false)
+  // #修复4 意图化联网：默认开启，后端按意图判定触发搜索，无结果静默降级本地推理
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true)
 
   // 读取联网搜索开关配置
   useEffect(() => {
     if (!window.api) return
     window.api.invoke<boolean>('config:get', 'webSearchEnabled')
       .then((v: any) => { if (typeof v === 'boolean') setWebSearchEnabled(v) })
-      .catch(() => { /* 忽略：首次启动无配置时保持默认关闭 */ })
+      .catch(() => { /* 忽略：首次启动无配置时保持默认开启 */ })
   }, [])
 
   // 切换联网搜索开关并持久化
@@ -189,6 +226,29 @@ export default function ChatPanel(props: ChatPanelProps) {
     }
   }
 
+  // 一键导出回复为文档（Word / Markdown / PDF），调用主进程弹保存对话框落盘
+  const handleExport = async (msgId: string, text: string, format: 'md' | 'docx' | 'pdf') => {
+    if (!window.api) return
+    setExportingId(msgId)
+    setExportMenuId(null)
+    try {
+      const firstLine = text.split('\n').find(l => l.trim() && !l.trim().startsWith('#'))?.trim() || '玄枢AI回复'
+      const res = await window.api.invoke<{ success: boolean; canceled?: boolean; error?: string }>('chat:export-document', {
+        text,
+        title: firstLine.slice(0, 30),
+        format,
+      })
+      if (res?.success) {
+        setCopiedId(msgId) // 复用复制成功提示区展示「已导出」
+        setTimeout(() => setCopiedId(v => (v === msgId ? null : v)), 2500)
+      }
+    } catch {
+      /* 忽略：保存对话框取消或失败 */
+    } finally {
+      setExportingId(null)
+    }
+  }
+
   const handleDeleteClick = (id: string) => {
     if (pendingDeleteId === id) {
       deleteConversation(id)
@@ -221,6 +281,7 @@ export default function ChatPanel(props: ChatPanelProps) {
       (() => {
         const blocks = parseMessageContent(msg.content)
         return blocks.map((block, idx) => {
+          if (block.type === 'heading') return <MarkdownHeading key={idx} level={block.level} text={block.text} />
           if (block.type === 'code') return <CodeWindow key={idx} code={block.code} language={block.language} />
           if (block.type === 'table') return <TableCard key={idx} headers={block.headers} rows={block.rows} />
           if (block.type === 'image') return <ImageCard key={idx} path={block.path} />
@@ -230,8 +291,11 @@ export default function ChatPanel(props: ChatPanelProps) {
           const isErrorText = /^(错误|发送失败|\[联动错误\]|请求失败)/.test(block.text)
           return (
             <p key={idx} style={{
-              margin: '4px 0', lineHeight: 1.6,
-              color: isErrorText ? 'var(--danger)' : undefined,
+              // v3 仿Trae：AI 叙述正文松弛可读（15.5/1.7），无气泡
+              margin: '6px 0',
+              fontSize: 'var(--text-prose)',
+              lineHeight: 'var(--leading-prose)',
+              color: isErrorText ? 'var(--status-failed)' : undefined,
             }}>
               {renderInlineFormatted(block.text)}
             </p>
@@ -250,8 +314,8 @@ export default function ChatPanel(props: ChatPanelProps) {
         style={{
           display: 'flex',
           gap: 10,
-          marginBottom: 16,
-          // AI 消息：头像在左，纯文本无气泡；用户消息：气泡在左，头像在右
+          marginBottom: 20,
+          // AI 消息：头像在左，纯文本无气泡；用户消息：轻量胶囊在左，头像在右
           flexDirection: 'row',
           justifyContent: isUser ? 'flex-end' : 'flex-start',
           paddingLeft: isUser ? 40 : 0,
@@ -259,51 +323,136 @@ export default function ChatPanel(props: ChatPanelProps) {
         }}
       >
         {!isUser && <UserAvatar />}
-        <div
-          style={{
-            flex: isUser ? '0 1 auto' : '1',
-            padding: isUser ? '12px 16px' : '4px 0',
-            borderRadius: isUser ? 'var(--radius-lg)' : undefined,
-            background: isUser ? 'var(--brand-dim)' : 'transparent',
-            border: isUser ? '1px solid var(--border-focus)' : 'none',
-            maxWidth: '75%',
-            wordBreak: 'break-word',
-            position: 'relative',
-          }}
-        >
-          {renderedContent}
-          {/* 消息操作：AI 消息提供复制/播报；用户消息提供复制（体验优化：消息操作可用性） */}
-          <div style={{ marginTop: 6, display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-            <button
-              onClick={() => handleCopy(msg.id, msg.content)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: copiedId === msg.id ? 'var(--brand)' : 'var(--text-tertiary)', padding: '2px 4px' }}
-              title={copiedId === msg.id ? '已复制' : '复制'}
-              aria-label={copiedId === msg.id ? '已复制' : '复制消息'}
-            >{copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}</button>
+        <div style={{
+          flex: isUser ? '0 1 auto' : '1',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: isUser ? 'flex-end' : 'stretch',
+          minWidth: 0,
+          maxWidth: '75%',
+        }}>
+          <div
+            style={{
+              padding: isUser ? '10px 14px' : '4px 0',
+              borderRadius: isUser ? 'var(--radius-2xl)' : undefined,
+              // v3：用户消息轻量胶囊（实底抬升面 + 极弱边框），不用品牌色描边
+              background: isUser ? 'var(--bg-elevated)' : 'transparent',
+              border: isUser ? '1px solid var(--border-subtle)' : 'none',
+              wordBreak: 'break-word',
+              position: 'relative',
+              alignSelf: isUser ? 'flex-end' : 'stretch',
+              width: isUser ? 'auto' : '100%',
+            }}
+          >
+            {!isUser && !isTandem && !isTask && <ReasoningBlock text={msg.reasoning} streaming={isStreaming && messages[messages.length - 1]?.id === msg.id} />}
+            {renderedContent}
+            {/* F批：用户消息附件（真实内容数组，非文本标记） — 图片/文件缩略渲染 */}
+            {isUser && msg.files && msg.files.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                {msg.files.map((f, fi) =>
+                  f.type.startsWith('image/')
+                    ? <ImageCard key={fi} path={f.path} />
+                    : <FileCard key={fi} path={f.path} />
+                )}
+              </div>
+            )}
+            {/* AI 消息操作行：复制/导出/播报 + A批7 生成统计徽标（约N tokens · 真实耗时 · 速度 · 字数） */}
             {!isUser && (
-              <button
-                onClick={() => handleSpeakMessage(msg.id, msg.content)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: speakingId === msg.id ? 'var(--brand)' : 'var(--text-tertiary)', padding: '2px 4px' }}
-                title="播报"
-                aria-label="播报消息"
-              ><Volume2 size={14} /></button>
+              <div style={{ marginTop: 6, display: 'flex', gap: 4, justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
+                {formatStatBadge(msg) && (
+                  <span style={{ marginRight: 4, fontSize: 10.5, color: 'var(--text-tertiary)', opacity: 0.78, display: 'inline-flex', alignItems: 'center', gap: 3, lineHeight: 1 }}>
+                    {formatStatBadge(msg)}
+                  </span>
+                )}
+                <button
+                  onClick={() => handleCopy(msg.id, msg.content)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: copiedId === msg.id ? 'var(--status-running)' : 'var(--text-tertiary)', padding: '2px 4px' }}
+                  title={copiedId === msg.id ? '已复制' : '复制'}
+                  aria-label={copiedId === msg.id ? '已复制' : '复制消息'}
+                >{copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}</button>
+                <button
+                  onClick={() => setExportMenuId(exportMenuId === msg.id ? null : msg.id)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: exportMenuId === msg.id ? 'var(--status-running)' : 'var(--text-tertiary)', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                  title="导出为文档"
+                  aria-label="导出为文档"
+                ><FileDown size={14} />{exportingId === msg.id && <span style={{ fontSize: 10 }}>导出中…</span>}</button>
+                {exportMenuId === msg.id && (
+                  <span style={{ display: 'inline-flex', gap: 2, alignItems: 'center', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '2px 4px' }}>
+                    {([
+                      ['docx', 'Word'],
+                      ['md', 'Markdown'],
+                      ['pdf', 'PDF'],
+                    ] as const).map(([fmt, label]) => (
+                      <button
+                        key={fmt}
+                        onClick={() => handleExport(msg.id, msg.content, fmt)}
+                        disabled={exportingId === msg.id}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 11, padding: '2px 6px', borderRadius: 5 }}
+                      >{label}</button>
+                    ))}
+                  </span>
+                )}
+                <button
+                  onClick={() => handleSpeakMessage(msg.id, msg.content)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: speakingId === msg.id ? 'var(--status-running)' : 'var(--text-tertiary)', padding: '2px 4px' }}
+                  title="播报"
+                  aria-label="播报消息"
+                ><Volume2 size={14} /></button>
+                {speakingId === msg.id && (
+                  <>
+                    <button
+                      onClick={togglePauseSpeaking}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: '2px 4px' }}
+                      title={speakingPaused ? '继续朗读' : '暂停朗读'}
+                      aria-label={speakingPaused ? '继续朗读' : '暂停朗读'}
+                    >{speakingPaused ? <Play size={14} /> : <Pause size={14} />}</button>
+                    <button
+                      onClick={stopSpeaking}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: '2px 4px' }}
+                      title="停止朗读"
+                      aria-label="停止朗读"
+                    ><Square size={14} /></button>
+                  </>
+                )}
+              </div>
             )}
           </div>
+          {/* A批7：用户消息复制按钮移到气泡下方，与时间戳对称成行（不再占气泡内空间） */}
+          {isUser && (
+            <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {msg.timestamp ? (
+                <span style={{ fontSize: 11, color: 'var(--text-tertiary)', opacity: 0.72, lineHeight: 1 }}>
+                  {new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              ) : null}
+              <button
+                onClick={() => handleCopy(msg.id, msg.content)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: copiedId === msg.id ? 'var(--status-running)' : 'var(--text-tertiary)', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+                title={copiedId === msg.id ? '已复制' : '复制'}
+                aria-label={copiedId === msg.id ? '已复制' : '复制消息'}
+              >{copiedId === msg.id ? <Check size={13} /> : <Copy size={13} />}{copiedId === msg.id ? ' 已复制' : ' 复制'}</button>
+            </div>
+          )}
         </div>
-        {isUser && <UserAvatar />}
+        {isUser && <UserAvatar role="user" />}
       </motion.div>
     )
   }
 
   const renderMessages = () => (
-    <div ref={scrollContainerRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+    <div ref={scrollContainerRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 8px' }}>
       <AnimatePresence initial={false}>
         {messages.map(renderMessage)}
       </AnimatePresence>
+      {/* 任务步骤/工具调用过程时间线（订阅 taskRunStore，无过程时不渲染），右侧与 AI 正文列对齐 */}
+      <div style={{ paddingRight: 40 }}>
+        <TaskRunTimeline />
+      </div>
+      {/* v3：等待首个 token 时用蓝色 spinner + 文案，替代拟物三跳点 */}
       {isStreaming && messages.length > 0 && messages[messages.length - 1].role === 'assistant' && !messages[messages.length - 1].content && (
-        <div style={{ display: 'flex', gap: 10, paddingRight: 40 }}>
-          <UserAvatar />
-          <TypingDots />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 40, color: 'var(--text-tertiary)' }}>
+          <Loader2 size={14} className="animate-spin" style={{ color: 'var(--status-running)' }} />
+          <span style={{ fontSize: 13 }}>正在思考…</span>
         </div>
       )}
     </div>
@@ -316,24 +465,31 @@ export default function ChatPanel(props: ChatPanelProps) {
           initial={{ x: -320 }}
           animate={{ x: 0 }}
           exit={{ x: -320 }}
-          transition={{ type: 'spring', damping: 25 }}
+          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
           style={{
             position: 'absolute', left: 0, top: 0, bottom: 0, width: 300,
-            background: 'var(--bg-elevated)', borderRight: '1px solid var(--border-default)',
+            // v3：历史抽屉去紫蓝渐变/重边框/模糊，统一实底 + 极弱边框
+            background: 'var(--bg-surface)',
+            borderRight: '1px solid var(--border-default)',
+            borderRadius: '0 12px 12px 0',
+            boxShadow: 'var(--shadow-lg)',
             zIndex: 20, display: 'flex', flexDirection: 'column',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--border-default)' }}>
-            <span style={{ fontWeight: 600, fontSize: 15 }}>对话历史</span>
-            <button onClick={() => setHistoryOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }} aria-label="关闭历史面板"><X size={18} /></button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px', height: 52, flexShrink: 0, borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+            <span style={{ fontWeight: 600, fontSize: 13.5, color: COLORS.textPrimary, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <MessageSquare size={14} color={COLORS.accent} />
+              对话历史
+            </span>
+            <button onClick={() => setHistoryOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.textMuted, width: 26, height: 26, borderRadius: 8 }} aria-label="关闭历史面板"><X size={15} /></button>
           </div>
           <div style={{ padding: '8px 12px' }}>
             <button
               onClick={createConversation}
               style={{
                 width: '100%', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8,
-                background: 'var(--bg-hover)', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)',
-                cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 13,
+                background: 'var(--bg-hover)', border: `1px solid ${HEX_COLORS.accent}44`, borderRadius: 10,
+                cursor: 'pointer', color: COLORS.textPrimary, fontSize: 13, fontFamily: 'inherit',
               }}
             >
               <Plus size={16} /> 新建对话
@@ -341,7 +497,7 @@ export default function ChatPanel(props: ChatPanelProps) {
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
             {conversations.length === 0 ? (
-              <div style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 13 }}>
+              <div style={{ padding: '32px 12px', textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
                 暂无历史对话
               </div>
             ) : conversations.map(conv => (
@@ -349,38 +505,39 @@ export default function ChatPanel(props: ChatPanelProps) {
                 key={conv.id}
                 onClick={() => switchConversation(conv.id)}
                 style={{
-                  padding: '10px 12px', borderRadius: 'var(--radius-md)', cursor: 'pointer',
+                  padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
                   marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8,
                   background: conv.id === currentConversationId ? 'var(--bg-hover)' : 'transparent',
-                  color: conv.id === currentConversationId ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  color: conv.id === currentConversationId ? COLORS.textPrimary : COLORS.textSecondary,
+                  transition: 'background 120ms',
                 }}
               >
-                <MessageSquare size={15} style={{ flexShrink: 0 }} />
+                <MessageSquare size={15} style={{ flexShrink: 0, color: conv.id === currentConversationId ? COLORS.accent : COLORS.textMuted }} />
                 {editingConvId === conv.id ? (
                   <div style={{ flex: 1, display: 'flex', gap: 6 }}>
                     <input
                       value={editTitle}
                       onChange={(e) => setEditTitle(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleConfirmRename(conv.id)}
-                      style={{ flex: 1, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--border-focus)', background: 'var(--bg-base)', fontSize: 13 }}
+                      style={{ flex: 1, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--border-default)', background: 'var(--bg-base)', fontSize: 13, color: COLORS.textPrimary }}
                       autoFocus
                     />
-                    <button onClick={() => handleConfirmRename(conv.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--brand)' }}><Check size={14} /></button>
-                    <button onClick={handleCancelRename} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}><X size={14} /></button>
+                    <button onClick={() => handleConfirmRename(conv.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.accent }}><Check size={14} /></button>
+                    <button onClick={handleCancelRename} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.textMuted }}><X size={14} /></button>
                   </div>
                 ) : (
                   <>
                     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>{conv.title}</span>
-                      <span style={{ fontSize: 11, color: 'var(--text-tertiary)', opacity: 0.8 }}>{formatRelativeTime(conv.updatedAt ?? conv.createdAt ?? conv.timestamp)}</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, color: 'inherit' }}>{conv.title}</span>
+                      <span style={{ fontSize: 11, color: COLORS.textMuted, opacity: 0.8 }}>{formatRelativeTime(conv.updatedAt ?? conv.createdAt ?? conv.timestamp)}</span>
                     </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); handleStartRename(conv.id, conv.title) }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', opacity: 0.5, padding: '2px' }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.textMuted, opacity: 0.5, padding: '2px' }}
                     ><Pencil size={12} /></button>
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDeleteClick(conv.id) }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: pendingDeleteId === conv.id ? 'var(--danger)' : 'var(--text-tertiary)', opacity: pendingDeleteId === conv.id ? 1 : 0.5, padding: '2px' }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: pendingDeleteId === conv.id ? COLORS.danger : COLORS.textMuted, opacity: pendingDeleteId === conv.id ? 1 : 0.5, padding: '2px' }}
                       title={pendingDeleteId === conv.id ? '再次点击确认删除' : '删除对话'}
                     >{pendingDeleteId === conv.id ? <span style={{ fontSize: 12, fontWeight: 600 }}>确认?</span> : <Trash2 size={12} />}</button>
                   </>
@@ -393,26 +550,21 @@ export default function ChatPanel(props: ChatPanelProps) {
     </AnimatePresence>
   )
 
-  // 将拖拽/粘贴的文件追加为输入中的引用标记（函数式 setInput，避免闭包过期导致多文件丢失）
-  const appendFileMark = useCallback((file: File) => {
-    const path = (file as any).path || file.name
-    const type = file.type
-    const mark = type.startsWith('image/') ? `[图片: ${path}]`
-      : type.startsWith('audio/') ? `[音频: ${path}]`
-      : type.startsWith('video/') ? `[视频: ${path}]`
-      : `[文件: ${path}]`
-    setInput(prev => prev ? `${prev}\n${mark}` : mark)
-  }, [setInput])
+  // F批：拖拽/粘贴的文件统一交给 Home 侧转真实路径并暂存为附件（替换旧「[图片:path] 文本标记」方案）
+  const collectFiles = (files: File[]) => {
+    if (!files.length) return
+    onAddAttachments(files)
+  }
 
   const inputBar = (
     <div
-      style={{ maxWidth: 860, margin: '0 auto', width: '100%' }}
+      style={{ maxWidth: 'var(--taskflow-max)', margin: '0 auto', width: '100%' }}
       onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
         e.preventDefault(); e.stopPropagation(); setDragOver(false)
         const files = Array.from(e.dataTransfer?.files ?? [])
-        files.forEach(appendFileMark)
+        collectFiles(files)
       }}
       onPaste={(e) => {
         const items = e.clipboardData?.items
@@ -422,7 +574,7 @@ export default function ChatPanel(props: ChatPanelProps) {
           const item = items[i]
           if (item.kind === 'file') {
             const file = item.getAsFile()
-            if (file) { appendFileMark(file); pastedAny = true }
+            if (file) { collectFiles([file]); pastedAny = true }
           }
         }
         if (pastedAny) e.preventDefault()
@@ -430,26 +582,22 @@ export default function ChatPanel(props: ChatPanelProps) {
     >
       <motion.div
         animate={{
-          borderColor: isFocused ? 'var(--border-focus)' : dragOver ? 'var(--accent)' : 'var(--border-default)',
-          boxShadow: isFocused
-            ? '0 0 0 3px var(--accent-dim), var(--accent-glow), var(--shadow-card)'
-            : dragOver
-              ? '0 0 0 3px rgba(176,176,186,0.14), var(--accent-glow), var(--shadow-card)'
-              : 'var(--shadow-card)',
+          // v3：聚焦/拖入用蓝色（进行色），不再用银灰 glow
+          borderColor: isFocused || dragOver ? 'var(--status-running)' : 'var(--border-default)',
+          boxShadow: isFocused || dragOver ? '0 0 0 3px var(--status-running-dim)' : '0 0 0 0 transparent',
         }}
         transition={{ duration: 0.18, ease: 'easeOut' }}
         style={{
           position: 'relative',
           display: 'flex', flexDirection: 'column',
-          // 玻璃/金属质感：顶部渐变高光 + 内描边 + 柔和阴影
-          background: 'linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.015) 60%, rgba(255,255,255,0.03) 100%), var(--bg-elevated)',
+          // v3 去玻璃化：实底抬升面，不要线性渐变/内高光/辉光
+          background: 'var(--bg-elevated)',
           border: '1px solid var(--border-default)',
-          borderRadius: 'var(--radius-20)',
-          boxShadow: 'var(--inset-hi-strong), var(--shadow-card)',
+          borderRadius: 'var(--radius-2xl)',
           overflow: 'hidden',
         }}
       >
-        {/* 拖拽文件悬停：精致高亮浮层（虚线框 + 图标 + 提示），松开即引用文件 */}
+        {/* 拖拽文件悬停：明确高亮浮层（虚线框 + 图标 + 提示），松开即引用文件 */}
         <AnimatePresence>
           {dragOver && (
             <motion.div
@@ -458,14 +606,13 @@ export default function ChatPanel(props: ChatPanelProps) {
               style={{
                 position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
-                background: 'rgba(26,26,28,0.78)',
-                backdropFilter: 'blur(4px)',
-                borderRadius: 'var(--radius-20)',
-                boxShadow: 'inset 0 0 0 1px var(--accent)',
+                background: 'rgba(26,27,29,0.82)',
+                borderRadius: 'var(--radius-2xl)',
+                boxShadow: 'inset 0 0 0 1px var(--status-running)',
                 margin: 4,
               }}
             >
-              <div style={{ width: 42, height: 42, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-dim)', color: 'var(--accent-light)' }}>
+              <div style={{ width: 42, height: 42, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--status-running-dim)', color: 'var(--status-running)' }}>
                 <Paperclip size={18} />
               </div>
               <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>松开以将文件添加到消息</div>
@@ -474,33 +621,33 @@ export default function ChatPanel(props: ChatPanelProps) {
           )}
         </AnimatePresence>
 
-        {/* 主输入行：语音 / 输入区 / 超算模式 / 发送（停止） */}
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, padding: '14px 14px 4px' }}>
-          <motion.button
-            onClick={isRecording ? stopRecording : startRecording}
-            whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.94 }}
-            title={isRecording ? '停止录音' : '语音输入'}
-            aria-label={isRecording ? '停止录音' : '语音输入'}
-            style={{
-              position: 'relative',
-              width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: isRecording ? 'var(--danger)' : 'var(--bg-hover)',
-              color: isRecording ? '#fff' : 'var(--text-secondary)', cursor: 'pointer',
-              border: isRecording ? 'none' : '1px solid var(--border-default)',
-              transition: 'background 0.15s ease, color 0.15s ease, border-color 0.15s ease',
-            }}
-          >
-            {isRecording && (
-              <span style={{
-                position: 'absolute', inset: -3, borderRadius: '50%',
-                border: '1px solid rgba(212,112,106,0.55)',
-                animation: 'rip 1.6s ease-out infinite',
-              }} />
-            )}
-            <Mic size={16} />
-          </motion.button>
+        {/* F批：待发送附件暂存条（真实文件缩略，可逐条移除） */}
+        {attachments.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '6px 14px 0' }}>
+            {attachments.map(a => (
+              <div key={a.id} style={{
+                position: 'relative',
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: 'var(--bg-hover)', border: '1px solid var(--border-subtle)', borderRadius: 8,
+                padding: '4px 6px', minWidth: 0, maxWidth: 240,
+              }}>
+                <div style={{ flexShrink: 0, width: 22, height: 22, borderRadius: 5, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
+                  {a.type === 'image' ? <ImageIcon size={13} /> : <Paperclip size={13} />}
+                </div>
+                <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={a.path}>{a.name}</span>
+                <button
+                  onClick={() => onRemoveAttachment(a.id)}
+                  title="移除附件"
+                  aria-label="移除附件"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: 0, display: 'inline-flex', flexShrink: 0 }}
+                ><X size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
 
+        {/* 主输入行：输入区 / 联网搜索 / 发送（停止） */}
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, padding: '14px 14px 4px' }}>
           <textarea
             ref={inputRef}
             value={input}
@@ -515,11 +662,7 @@ export default function ChatPanel(props: ChatPanelProps) {
               }
             }}
             onFocus={() => setIsFocused(true)} onBlur={() => setIsFocused(false)}
-            placeholder={
-              tandemMode
-                ? `${tandemMode === 'dual' ? '双答' : tandemMode === 'partner' ? '搭档' : tandemMode === 'mentor' ? '师徒' : '辩论'}模式 - 输入消息…`
-                : '输入消息，与玄枢开始对话…'
-            }
+            placeholder={'输入消息，与玄枢开始对话…'}
             className="input"
             style={{
               flex: 1, minHeight: 40, maxHeight: 120,
@@ -527,26 +670,9 @@ export default function ChatPanel(props: ChatPanelProps) {
               boxShadow: 'none',
               fontSize: 15, padding: '9px 6px', lineHeight: 1.6, overflowY: 'auto',
               color: 'var(--text-primary)',
-              caretColor: 'var(--accent)',
+              caretColor: 'var(--status-running)',
             }}
           />
-
-          <button
-            onClick={() => setTandemMode(tandemMode ? null : 'dual')}
-            title="超算模式"
-            aria-label="超算模式"
-            style={{
-              width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: tandemMode ? 'var(--brand-dim)' : 'var(--bg-hover)',
-              color: tandemMode ? 'var(--brand)' : 'var(--text-tertiary)', cursor: 'pointer',
-              border: tandemMode ? '1px solid var(--border-focus)' : '1px solid transparent',
-              fontSize: 12, fontWeight: 600,
-              transition: 'background 0.15s ease, color 0.15s ease, border-color 0.15s ease',
-            }}
-          >
-            超算
-          </button>
 
           {/* 联网搜索开关 */}
           <button
@@ -556,44 +682,48 @@ export default function ChatPanel(props: ChatPanelProps) {
             style={{
               width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: webSearchEnabled ? 'var(--brand-dim)' : 'var(--bg-hover)',
-              color: webSearchEnabled ? 'var(--brand)' : 'var(--text-tertiary)', cursor: 'pointer',
-              border: webSearchEnabled ? '1px solid var(--border-focus)' : '1px solid transparent',
+              background: webSearchEnabled ? 'var(--accent-dim)' : 'var(--bg-hover)',
+              color: webSearchEnabled ? 'var(--accent-light)' : 'var(--text-tertiary)', cursor: 'pointer',
+              border: webSearchEnabled ? '1px solid var(--border-default)' : '1px solid transparent',
               transition: 'background 0.15s ease, color 0.15s ease, border-color 0.15s ease',
             }}
           >
             <Globe size={16} />
           </button>
 
-          <motion.button
-            onClick={isStreaming ? handleStop : handleSend}
-            whileHover={input.trim() && !isStreaming ? { scale: 1.06 } : undefined}
-            whileTap={input.trim() || isStreaming ? { scale: 0.94 } : undefined}
+          <button
+            onClick={() => (isStreaming ? handleStop() : handleSend())}
             disabled={!input.trim() && !isStreaming}
             title={isStreaming ? '停止生成' : (input.trim() ? '发送' : '请输入消息')}
             aria-label={isStreaming ? '停止生成' : '发送消息'}
             style={{
               width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: isStreaming ? 'var(--danger)' : (input.trim() ? 'var(--brand)' : 'var(--bg-hover)'),
-              color: isStreaming ? '#fff' : (input.trim() ? '#1a1a1c' : 'var(--text-tertiary)'),
+              background: isStreaming ? 'var(--status-failed)' : (input.trim() ? 'var(--accent)' : 'var(--bg-hover)'),
+              color: isStreaming ? '#fff' : (input.trim() ? '#1a1b1d' : 'var(--text-tertiary)'),
               cursor: (input.trim() || isStreaming) ? 'pointer' : 'default',
               border: 'none',
-              boxShadow: isStreaming
-                ? '0 0 0 3px rgba(212,112,106,0.18), 0 4px 14px rgba(212,112,106,0.25)'
-                : (input.trim() ? '0 0 0 3px var(--accent-dim), 0 4px 14px rgba(176,176,186,0.28)' : 'none'),
-              transition: 'background 0.15s ease, box-shadow 0.2s ease',
+              boxShadow: 'none',
+              transition: 'background 0.15s ease, transform 0.1s ease',
             }}
+            onMouseDown={(e) => {
+              if ((input.trim() || isStreaming)) {
+                const el = e.currentTarget as HTMLButtonElement;
+                el.style.transform = 'scale(0.94)';
+              }
+            }}
+            onMouseUp={(e) => { (e.currentTarget as HTMLButtonElement).style.transform = ''; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.transform = ''; }}
           >
             {isStreaming
               ? <div style={{ width: 13, height: 13, background: '#fff', borderRadius: 3, animation: 'pulse-soft 1.2s ease-in-out infinite' }} />
               : <ArrowUp size={18} strokeWidth={2.2} />}
-          </motion.button>
+          </button>
         </div>
 
         {/* 辅助行：快捷键提示（左） / 上下文用量（右） */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '4px 16px 10px' }}>
-          <span style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500, userSelect: 'none', whiteSpace: 'nowrap', letterSpacing: 0.2 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500, userSelect: 'none', whiteSpace: 'nowrap', letterSpacing: 0.2 }}>
             Enter 发送 · Shift+Enter 换行 · 支持拖入文件
           </span>
           <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
@@ -627,9 +757,12 @@ export default function ChatPanel(props: ChatPanelProps) {
         <ModelSwitcher />
       </div>
 
-      {messages.length > 0 ? renderMessages() : (
-        <div style={{ flex: 1 }} />
-      )}
+      {/* 中央内容区：稳定外层，消息列表/空态在内部切换，避免切换模型/首个消息时面板上下跳变 */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        {messages.length > 0 ? renderMessages() : (
+          <div style={{ flex: 1 }} />
+        )}
+      </div>
 
       <div style={{ padding: '14px 20px 18px', display: 'flex', justifyContent: 'center' }}>
         {inputBar}

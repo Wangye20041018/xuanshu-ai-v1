@@ -3,7 +3,8 @@ import { getStore } from './config.ipc'
 import { logger } from '../../shared/logger'
 import { apiQuotaTracker } from '../api-quota-tracker'
 import { createProxyAgent } from '../utils/proxy-resolver'
-import { classifyFetchError } from '../llm/provider'
+import { classifyFetchError, classifyApiHttpError } from '../llm/provider'
+import { encrypt, decrypt, mask } from '../secure/secure-store'
 
 /** 带超时 + 代理的 fetch（外网 API 探测用） */
 async function apiFetch(url: string, options: RequestInit = {}, timeoutMs: number = 15000): Promise<Response> {
@@ -68,12 +69,30 @@ function isAppRenderer(event: Electron.IpcMainInvokeEvent): boolean {
 }
 
 export function setupLLMHandlers(): void {
+  // A5 修复：一次性迁移历史上已明文落盘的 providers apiKey（$ENC$ 前缀为已加密）
+  try {
+    const store0 = getStore()
+    const legacy: any[] = store0.get('providers') || []
+    const needsMigration = legacy.some((p: any) => p.apiKey && !String(p.apiKey).startsWith('$ENC$'))
+    if (needsMigration) {
+      const migrated = legacy.map((p: any) => {
+        if (!p.apiKey || String(p.apiKey).startsWith('$ENC$')) return p
+        const encrypted = encrypt(p.apiKey)
+        return { ...p, apiKey: encrypted ?? p.apiKey }
+      })
+      store0.set('providers', migrated)
+      logger.info(`[llm.ipc] 已迁移 ${migrated.filter((p, i) => p.apiKey !== legacy[i]?.apiKey).length} 个 provider 的明文 apiKey 为 safeStorage 加密`)
+    }
+  } catch (e) {
+    logger.warn('[llm.ipc] providers 明文 key 迁移失败（跳过）:', e)
+  }
+
   ipcMain.handle('llm:list-providers', () => {
     try {
       const providers = getStore().get('providers') || []
       return providers.map((p: any) => ({
         ...p,
-        apiKey: p.apiKey ? p.apiKey.substring(0, 4) + '****' : undefined,
+        apiKey: p.apiKey ? mask(decrypt(p.apiKey)) : undefined,
       }))
     } catch (error) {
       logger.error('llm:list-providers error:', error)
@@ -105,7 +124,11 @@ export function setupLLMHandlers(): void {
         return { error: 'Security: internal/private addresses are not allowed' }
       }
 
-      providers.push(config)
+      // A5 修复：apiKey 以 safeStorage 加密后落盘，杜绝明文
+      const encrypted = config.apiKey ? (encrypt(config.apiKey) ?? '') : undefined
+      const toStore: ProviderConfig = { ...config, apiKey: encrypted }
+
+      providers.push(toStore)
       store.set('providers', providers)
 
       // 同步初始化 API 配额记录
@@ -157,6 +180,9 @@ export function setupLLMHandlers(): void {
       // 前端未提供新 key（如页面刷新后内存态为空）时保留原 key，防止误清空已保存的密钥
       if (!config.apiKey) {
         merged.apiKey = providers[index].apiKey
+      } else if (!String(config.apiKey).startsWith('$ENC$')) {
+        // A5 修复：新 key 以 safeStorage 加密后落盘，杜绝明文
+        merged.apiKey = encrypt(config.apiKey) ?? ''
       }
       providers[index] = merged
       store.set('providers', providers)
@@ -240,7 +266,20 @@ export function setupLLMHandlers(): void {
           'Authorization': `Bearer ${config.apiKey}`
         }
       }, 10000)
-      return { success: response.ok }
+      if (!response.ok) {
+        let detail = ''
+        try {
+          const raw = await response.text()
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw)
+              detail = parsed?.error?.message || parsed?.error || parsed?.message || ''
+            } catch { detail = raw }
+          }
+        } catch { detail = '' }
+        return { error: classifyApiHttpError(response.status, detail, config.name || '云端 API').message }
+      }
+      return { success: true }
     } catch (error) {
       logger.error('llm:test-provider 内部错误:', error)
       return { error: classifyFetchError(error, '连接测试').message }
@@ -270,7 +309,17 @@ export function setupLLMHandlers(): void {
 
       const response = await apiFetch(target, { headers })
       if (!response.ok) {
-        return { error: `拉取模型列表失败: HTTP ${response.status}` }
+        let detail = ''
+        try {
+          const raw = await response.text()
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw)
+              detail = parsed?.error?.message || parsed?.error || parsed?.message || ''
+            } catch { detail = raw }
+          }
+        } catch { detail = '' }
+        return { error: classifyApiHttpError(response.status, detail, config.provider || '云端 API').message }
       }
       const data = await response.json()
       const rawModels = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []

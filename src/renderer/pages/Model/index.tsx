@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion } from 'framer-motion'
-import {Save, RotateCcw, Cpu, Zap, Activity, BarChart3, MemoryStick, Trash2, FolderOpen, Star, Loader, Power, PowerOff, Eye, EyeOff, Settings, AlertTriangle, ToggleLeft, ToggleRight, ChevronDown, ChevronRight, Wifi, WifiOff, Download, RefreshCw, CheckCircle} from 'lucide-react'
+import {Save, RotateCcw, Cpu, Zap, Thermometer, Activity, BarChart3, MemoryStick, Trash2, FolderOpen, Star, Loader, Power, PowerOff, Eye, EyeOff, Settings, AlertTriangle, ToggleLeft, ToggleRight, ChevronDown, ChevronRight, Wifi, WifiOff, Download, RefreshCw, CheckCircle} from 'lucide-react'
 import { HEX_COLORS, COLORS, containerVariants, itemVariants } from '../../shared/theme'
 
 import { logger } from '../../../shared/logger'
 import ErrorBoundary from '../../components/ErrorBoundary'
-import TandemPanel from '../../components/TandemPanel'
+import SchedulerPage from '../Scheduler'
 import ModelAnalysisCard from './ModelAnalysisCard'
-import InferenceModeSelector from './InferenceModeSelector'
 import CloudQuotaPanel from './CloudQuotaPanel'
 import LocalAiPanel from './LocalAiPanel'
 import { showToast } from '../../components/Toast'
@@ -17,8 +16,8 @@ import { showToast } from '../../components/Toast'
  * ============================================================ */
 interface GPUStats {
   usage: number
-  memoryUsedMB: number
-  memoryTotalMB: number
+  memoryUsed: number
+  memoryTotal: number
   temperature: number
   modelName: string
 }
@@ -106,8 +105,14 @@ interface RegisteredModel {
   modelPath: string
   type: 'main' | 'vision' | 'embedding'
   mmprojPath?: string
+  /** v12.3 是否多模态（后端自动检测或绑定 mmproj 后置真） */
+  isMultimodal?: boolean
+  /** v12.3 多模态置信度（后端 mmproj 配对评估） */
+  multimodalConfidence?: number
   gpuLayers: number
   mode: 'gpu' | 'cpu'
+  /** 模型运行位置（用户显式设置）：auto 自动 / cpu 纯CPU / gpu 纯GPU / layered 分层 */
+  runLocation?: 'auto' | 'cpu' | 'gpu' | 'layered'
   contextSize: number
   temperature: number
   maxTokens: number
@@ -178,6 +183,7 @@ function ApiAccessPanel() {
   const [baseUrl, setBaseUrl] = useState(API_PROVIDERS[0].defaultBaseUrl)
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState<'success' | 'fail' | null>(null)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
   const [models, setModels] = useState<ApiModelCard[]>([])
   const [editingAlias, setEditingAlias] = useState<string | null>(null)
   const [aliasDraft, setAliasDraft] = useState('')
@@ -246,6 +252,7 @@ function ApiAccessPanel() {
     const p = API_PROVIDERS.find(x => x.id === id)
     setBaseUrl(p?.defaultBaseUrl || '')
     setVerifyResult(null)
+    setVerifyError(null)
     setConnectionStatus('idle')
     setFetchedApiModels([])
     setFetchError(null)
@@ -254,6 +261,7 @@ function ApiAccessPanel() {
   const handleVerify = async () => {
     setVerifying(true)
     setVerifyResult(null)
+    setVerifyError(null)
     setConnectionStatus('idle')
     try {
       if (window.api) {
@@ -262,7 +270,9 @@ function ApiAccessPanel() {
           setVerifyResult('success')
           setConnectionStatus('connected')
         } else {
+          // 展示 classifyApiHttpError 分类结果（401/403→Key无效、402→余额不足、429→限流）
           setVerifyResult('fail')
+          setVerifyError(result?.error || '连接失败，请检查 API Key 和 Base URL')
           setConnectionStatus('disconnected')
         }
       } else {
@@ -271,6 +281,7 @@ function ApiAccessPanel() {
       }
     } catch {
       setVerifyResult('fail')
+      setVerifyError('连接测试出现异常，请稍后重试')
       setConnectionStatus('disconnected')
     }
     setVerifying(false)
@@ -431,11 +442,11 @@ background: provider === p.id ? `${HEX_COLORS.accent}15` : 'transparent',
         </div>
 
         {/* API Key 输入 */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
           <div style={{ flex: 1, position: 'relative' }}>
             <input type={showKey ? 'text' : 'password'} value={apiKey}
-              onChange={e => { setApiKey(e.target.value); setVerifyResult(null) }}
-              placeholder="输入 API Key..."
+              onChange={e => { setApiKey(e.target.value); setVerifyResult(null); setVerifyError(null) }}
+              placeholder="输入 API Key（必填，在服务商控制台创建）..."
               style={{
                 width: '100%', padding: '10px 40px 10px 14px', borderRadius: 10,
                 background: 'rgba(255,255,255,0.03)', border: `1px solid ${COLORS.cardBorder}`,
@@ -500,13 +511,29 @@ background: verifyResult === 'success' ? `${HEX_COLORS.success}20` : 'rgba(255,2
             onFocus={e => e.currentTarget.style.borderColor = 'var(--border-focus)'}
             onBlur={e => e.currentTarget.style.borderColor = 'var(--border-default)'}
           />
+          <p style={{ fontSize: 11, color: COLORS.textMuted, margin: '4px 0 0' }}>
+            一般保持默认即可；仅当服务商使用自定义网关地址时才需修改
+          </p>
         </div>
 
+        {/* B5-2：分状态·未配置 key（真实状态，非假显示） */}
+        {!apiKey.trim() && !verifyError && (
+          <p style={{ fontSize: 12, color: COLORS.textMuted, margin: '6px 0 0' }}>
+            尚未配置 API Key —— 在服务商控制台创建后填入上方即可「验证连接」→「拉取模型列表」
+          </p>
+        )}
         {verifyResult === 'success' && (
           <span style={{ fontSize: 12, color: COLORS.success }}>连接成功，API 可用</span>
         )}
         {verifyResult === 'fail' && (
-          <span style={{ fontSize: 12, color: COLORS.danger }}>连接失败，请检查 API Key 和 Base URL</span>
+          <div style={{
+            marginTop: 4, padding: '8px 12px', borderRadius: 8,
+            background: COLORS.dangerDim, border: `1px solid ${HEX_COLORS.dangerAlt}26`,
+            fontSize: 12, color: COLORS.danger, display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <AlertTriangle size={14} />
+            {verifyError || '连接失败，请检查 API Key 和 Base URL'}
+          </div>
         )}
 
         {/* 拉取错误提示 */}
@@ -738,10 +765,12 @@ function ModelTuning() {
   // 用 ref 跟踪最新 config，避免 persistConfig 闭包过期
   const configRef = useRef(config)
   useEffect(() => { configRef.current = config }, [config])
-  const [activeTab, setActiveTab] = useState<'local' | 'api' | 'tandem'>('local')
+  const [activeTab, setActiveTab] = useState<'local' | 'api' | 'scheduler'>('local')
   const [perfStats, setPerfStats] = useState<PerformanceStats | null>(null)
   const [snapshots, setSnapshots] = useState<SystemSnapshot[]>([])
-  const [snapshotRunning, setSnapshotRunning] = useState(false)
+  const [snapshotRunning] = useState(true)
+  /* 系统检测常驻：实时性能卡始终展示；历史图表默认折叠，点击「监控历史」展开 */
+  const [histOpen, setHistOpen] = useState(false)
   const [deviceStrategy, setDeviceStrategy] = useState<DeviceStrategy | null>(null)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [showConfigFor, setShowConfigFor] = useState<string | null>(null)  // 当前打开配置面板的模型ID
@@ -749,6 +778,9 @@ function ModelTuning() {
   /** v12.1 当前内存待命模型 ID */
   const [standbyModelId, setStandbyModelId] = useState<string | null>(null)
   const [registryModels, setRegistryModels] = useState<RegisteredModel[]>([])
+  /* 运行位置编辑草稿（按模型 ID） */
+  const [runLocationDraft, setRunLocationDraft] = useState<Record<string, 'auto' | 'cpu' | 'gpu' | 'layered'>>({})
+  const [gpuLayersDraft, setGpuLayersDraft] = useState<Record<string, number>>({})
   const [confirmModal, setConfirmModal] = useState<ConfirmModalProps & { open: boolean }>({
     open: false, title: '', message: '', onConfirm: () => {}, onCancel: () => {},
   })
@@ -758,24 +790,31 @@ function ModelTuning() {
   /* 视觉模型双文件等待状态 */
   const [waitingForMmproj, setWaitingForMmproj] = useState(false)
   const [waitingModelPath, setWaitingModelPath] = useState<string | null>(null)
+  /* v12.3 视觉投影层（mmproj）绑定：目标模型 id + 隐藏文件选择 */
+  const [mmprojTargetId, setMmprojTargetId] = useState<string | null>(null)
+  const mmprojInputRef = useRef<HTMLInputElement | null>(null)
 
   /* 模型分析状态 */
   const [analyzedFilePath, setAnalyzedFilePath] = useState<string | null>(null)
 
   const [lastError, setLastError] = useState<string | null>(null)
   const [globalParamsCollapsed, setGlobalParamsCollapsed] = useState(false)
+  /* 区块三：已接入模型卡片「运行位置」折叠展开控制（缓解布局拥挤） */
+  const [expandedRuntimeId, setExpandedRuntimeId] = useState<string | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   /* A-3/A-4: 运行时状态聚合 + 参数回写辅助 refs */
   const [runtimeStatus, setRuntimeStatus] = useState<any>(null)
   const defaultModelIdRef = useRef<string | null>(null)
   const deviceStrategyRef = useRef<DeviceStrategy | null>(null)
+  const registryModelsRef = useRef<RegisteredModel[]>([])
   useEffect(() => { deviceStrategyRef.current = deviceStrategy }, [deviceStrategy])
+  useEffect(() => { registryModelsRef.current = registryModels }, [registryModels])
 
   const tabs = [
     { key: 'local' as const, label: '本地模型' },
     { key: 'api' as const, label: '云端接入' },
-    { key: 'tandem' as const, label: '联动模式' },
+    { key: 'scheduler' as const, label: '智能调度' },
   ]
 
   /* ----- 数据加载 ----- */
@@ -816,8 +855,10 @@ function ModelTuning() {
       if (window.api) {
         const result = await window.api.invoke('model-registry:list')
         if (Array.isArray(result)) {
-          setRegistryModels(result)
-          const def = result.find((m: any) => m.isDefault)
+          // 大修：模型页仅显示 9B/2B；nomic-embed 等向量检索模型后台工作、不展示
+          const visible = result.filter((m: any) => m.type !== 'embedding' && !['qwen2-vl-7b', 'qwen3.5-0.8b-behavior'].includes(m.id))
+          setRegistryModels(visible)
+          const def = visible.find((m: any) => m.isDefault)
           if (def) defaultModelIdRef.current = def.id
         }
       }
@@ -894,6 +935,75 @@ function ModelTuning() {
     } catch (e) { logger.error('[Model] 设默认失败:', e); setLastError(String(e)) }
   }, [])
 
+  /* 应用模型运行位置：回写注册表 runLocation/gpuLayers 并重启对应模型 */
+  const applyRunLocation = useCallback(async (rm: RegisteredModel) => {
+    const loc = runLocationDraft[rm.id] || rm.runLocation || 'auto'
+    try {
+      if (!window.api) return
+      const patch: any = { runLocation: loc }
+      if (loc === 'gpu' || loc === 'layered') {
+        // 用户手动指定层数，直通不被自动缩放覆盖；纯GPU按注册层数（默认取当前/35）
+        const layers = gpuLayersDraft[rm.id] ?? rm.gpuLayers ?? 35
+        patch.gpuLayers = Math.max(1, Math.min(99, Math.round(layers)))
+      }
+      const res = await window.api.invoke('model-registry:update-runtime', { id: rm.id, patch }) as any
+      if (res && res.success === false) {
+        setLastError(res.error || '保存运行位置失败')
+        return
+      }
+      const applied = await window.api.invoke('model-registry:restart-model', { id: rm.id })
+      logger.info('[Model] 运行位置已应用:', loc, applied)
+      showToast('success', `「${rm.name}」运行位置已更新并重启`)
+      await loadRegistry()
+      await loadRuntimeStatus()
+    } catch (e) { logger.error('[Model] 应用运行位置失败:', e); setLastError(String(e)) }
+  }, [runLocationDraft, gpuLayersDraft, loadRegistry, loadRuntimeStatus])
+
+  /* v12.3 视觉投影层（mmproj）绑定：打开隐藏文件选择 */
+  const openMmprojPicker = (id: string) => {
+    setMmprojTargetId(id)
+    setTimeout(() => mmprojInputRef.current?.click(), 0)
+  }
+
+  /* v12.3 选择 mmproj 文件 → 绑定 → 若模型在运行则自动重启生效 */
+  const handleMmprojPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    const targetId = mmprojTargetId
+    if (!file || !targetId || !window.api) return
+    try {
+      const mmprojPath = window.api.getPathForFile(file)
+      const res = await window.api.invoke('model-registry:set-mmproj', { id: targetId, mmprojPath }) as any
+      setMmprojTargetId(null)
+      if (res && res.success === false) {
+        setLastError(res.error || '绑定投影层失败')
+        return
+      }
+      const srv = (runtimeStatus?.servers ?? []).find((sv: any) => sv.modelId === targetId && sv.status === 'running')
+      if (srv) await window.api.invoke('model-registry:restart-model', { id: targetId })
+      showToast('success', srv ? '视觉投影层已绑定，模型已重启生效' : '视觉投影层已绑定，模型重启后生效')
+      await loadRegistry()
+      await loadRuntimeStatus()
+    } catch (err) { logger.error('[Model] 绑定投影层失败:', err); setLastError(String(err)); setMmprojTargetId(null) }
+  }
+
+  /* v12.3 解绑视觉投影层 */
+  const unbindMmproj = async (id: string) => {
+    if (!window.api) return
+    try {
+      const res = await window.api.invoke('model-registry:set-mmproj', { id, mmprojPath: undefined }) as any
+      if (res && res.success === false) {
+        setLastError(res.error || '解绑投影层失败')
+        return
+      }
+      const srv = (runtimeStatus?.servers ?? []).find((sv: any) => sv.modelId === id && sv.status === 'running')
+      if (srv) await window.api.invoke('model-registry:restart-model', { id })
+      showToast('success', '已解绑视觉投影层')
+      await loadRegistry()
+      await loadRuntimeStatus()
+    } catch (err) { logger.error('[Model] 解绑投影层失败:', err); setLastError(String(err)) }
+  }
+
   /* ----- 模型操作 ----- */
   const activateModel = useCallback(async (modelId: string) => {
     try {
@@ -945,13 +1055,24 @@ function ModelTuning() {
         // A-4: 将推理模式/gpuLayers/contextSize 回写注册表并重启对应模型，使 UI 参数真实生效
         const targetId = defaultModelIdRef.current || null
         if (targetId) {
-          const gpuLayers = Math.max(0, Math.min(99, Math.round(newConfig.gpuLayers ?? 0)))
           const ctx = Math.max(256, Math.round(newConfig.contextSize ?? 2048))
-          const mode = gpuLayers > 0 ? 'gpu' : 'cpu'
-          await window.api.invoke('model-registry:update-runtime', {
-            id: targetId,
-            patch: { gpuLayers, contextSize: ctx, mode },
-          })
+          const targetRm = registryModelsRef.current.find(m => m.id === targetId)
+          const loc = targetRm?.runLocation || 'auto'
+          if (loc === 'auto') {
+            // 自动模式：全局滑块回写 gpuLayers/mode，保留原有显存自适应逻辑
+            const gpuLayers = Math.max(0, Math.min(99, Math.round(newConfig.gpuLayers ?? 0)))
+            const mode = gpuLayers > 0 ? 'gpu' : 'cpu'
+            await window.api.invoke('model-registry:update-runtime', {
+              id: targetId,
+              patch: { gpuLayers, contextSize: ctx, mode },
+            })
+          } else {
+            // 用户已显式指定运行位置：仅更新上下文，不覆盖 runLocation/gpuLayers（避免破坏直通）
+            await window.api.invoke('model-registry:update-runtime', {
+              id: targetId,
+              patch: { contextSize: ctx },
+            })
+          }
           const applied = await window.api.invoke('model-registry:restart-model', { id: targetId })
           logger.info('[Model] 参数已回写注册表并重启模型:', applied)
           await loadRuntimeStatus()
@@ -1018,17 +1139,22 @@ function ModelTuning() {
     const ggufPaths: string[] = []
     const sizeMap: Record<string, number> = {}
     for (let i = 0; i < files.length; i++) {
-      const f = files[i] as File & { path?: string }
-      if (f.path && f.name.toLowerCase().endsWith('.gguf')) {
+      const f = files[i]
+      // Electron 32 已移除 File.path，必须经 preload 的 webUtils.getPathForFile 取真实路径
+      const realPath = (window.api?.getPathForFile ? window.api.getPathForFile(f) : '') || (f as File & { path?: string }).path || ''
+      if (realPath && f.name.toLowerCase().endsWith('.gguf')) {
         if (f.size === 0) {
           setLastError(`文件 ${f.name} 为空（0 字节），无法导入，请检查文件是否完整`)
           continue
         }
-        ggufPaths.push(f.path)
-        sizeMap[f.path] = f.size
+        ggufPaths.push(realPath)
+        sizeMap[realPath] = f.size
       }
     }
-    if (ggufPaths.length === 0) return
+    if (ggufPaths.length === 0) {
+      setLastError('未获取到文件真实路径（拖拽被拦截或路径解析失败），请将文件放到可拖拽区域重试')
+      return
+    }
 
     /* -- 触发模型分析 -- */
     setAnalyzedFilePath(ggufPaths[0])
@@ -1168,6 +1294,15 @@ function ModelTuning() {
     loadRuntimeStatus()
   }, [loadModels, loadPerf, loadSnapshots, loadRegistry, loadStandbyStatus, loadRuntimeStatus])
 
+  /* A-4: GPU 显存占用条真实数据周期刷新（4 秒，nvidia-smi 为准） */
+  useEffect(() => {
+    const t = setInterval(() => {
+      loadRuntimeStatus()
+      loadStandbyStatus()
+    }, 4000)
+    return () => clearInterval(t)
+  }, [loadRuntimeStatus, loadStandbyStatus])
+
   useEffect(() => {
     if (snapshotRunning) {
       intervalRef.current = setInterval(() => {
@@ -1217,6 +1352,10 @@ function ModelTuning() {
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible"
       style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 20, paddingBottom: 40 }}>
+      {/* v12.3 视觉投影层（mmproj）隐藏文件选择器 */}
+      <input ref={mmprojInputRef} type="file" accept=".gguf,.bin"
+        onChange={handleMmprojPick}
+        style={{ display: 'none' }} />
       <ConfirmModal {...confirmModal} />
 
       {/* ===== 页面头部 ===== */}
@@ -1233,17 +1372,17 @@ function ModelTuning() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setSnapshotRunning(!snapshotRunning)} style={{
+          <button onClick={() => setHistOpen(!histOpen)} style={{
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '8px 16px', borderRadius: 10, cursor: 'pointer',
 fontFamily: 'inherit', fontSize: 13, fontWeight: 500,
-background: snapshotRunning ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05)',
+background: histOpen ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05)',
             border: `1px solid ${COLORS.cardBorder}`,
-            color: snapshotRunning ? COLORS.success : COLORS.textSecondary,
+            color: histOpen ? COLORS.success : COLORS.textSecondary,
             transition: 'all 0.2s',
           }}>
             <Activity size={14} />
-            {snapshotRunning ? '监控中' : '系统监控'}
+            {histOpen ? '收起历史' : '监控历史'}
           </button>
           <button onClick={() => persistConfig()} style={{
             display: 'flex', alignItems: 'center', gap: 6,
@@ -1316,9 +1455,8 @@ background: snapshotRunning ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05
         </div>
       </div>
 
-      {/* ===== 性能监控面板 ===== */}
-      {snapshotRunning && (
-        <ErrorBoundary fallback={
+      {/* ===== 性能监控面板（系统检测常驻展示，不隐藏） ===== */}
+      <ErrorBoundary fallback={
           <div style={{
             background: COLORS.cardBg, border: `1px solid ${COLORS.cardBorder}`,
             borderRadius: 'var(--radius-2xl)', padding: '20px 24px',
@@ -1338,7 +1476,7 @@ background: snapshotRunning ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
             <Activity size={16} color={COLORS.accent} />
             <h3 style={{ fontSize: 14, fontWeight: 600, color: COLORS.textPrimary, margin: 0 }}>
-              实时性能监控
+              系统检测 · 实时状态
             </h3>
             {!perfStats && (
               <span style={{ fontSize: 12, color: COLORS.textMuted, marginLeft: 8 }}>
@@ -1391,8 +1529,8 @@ background: snapshotRunning ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05
                   {perfStats?.gpu?.usage != null ? `${perfStats.gpu.usage.toFixed(0)}%` : '--'}
                 </div>
                 <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
-                  {perfStats?.gpu?.memoryUsedMB != null ?
-                    `${fmtBytes(perfStats.gpu.memoryUsedMB)} / ${fmtBytes(perfStats.gpu.memoryTotalMB)}` :
+                  {perfStats?.gpu?.memoryUsed != null ?
+                    `${fmtBytes(perfStats.gpu.memoryUsed)} / ${fmtBytes(perfStats.gpu.memoryTotal)}` :
                     '无 GPU'}
                 </div>
               </div>
@@ -1406,10 +1544,10 @@ background: snapshotRunning ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05
                   <span style={{ fontSize: 12, color: COLORS.textSecondary }}>显存</span>
                 </div>
                 <div style={{ fontSize: 24, fontWeight: 700, color: COLORS.textPrimary }}>
-                  {perfStats?.gpu ? fmtBytes(perfStats.gpu.memoryUsedMB) : '--'}
+                  {perfStats?.gpu ? fmtBytes(perfStats.gpu.memoryUsed) : '--'}
                 </div>
                 <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
-                  {perfStats?.gpu ? `${((perfStats.gpu.memoryUsedMB / Math.max(perfStats.gpu.memoryTotalMB, 1)) * 100).toFixed(0)}%` : '--'}
+                  {perfStats?.gpu ? `${((perfStats.gpu.memoryUsed / Math.max(perfStats.gpu.memoryTotal, 1)) * 100).toFixed(0)}%` : '--'}
                 </div>
               </div>
               {/* 延迟 */}
@@ -1428,6 +1566,22 @@ background: snapshotRunning ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05
                   {(perfStats?.throughput ?? 0).toFixed(1)} tok/s
                 </div>
               </div>
+              {/* 温度 */}
+              <div style={{
+                background: 'rgba(255,255,255,0.02)', border: `1px solid ${COLORS.cardBorder}`,
+                borderRadius: 12, padding: 14,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                  <Thermometer size={14} color={COLORS.textSecondary} />
+                  <span style={{ fontSize: 12, color: COLORS.textSecondary }}>温度</span>
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 700, color: perfStats?.gpu?.temperature != null && perfStats.gpu.temperature > 80 ? COLORS.danger : COLORS.textPrimary }}>
+                  {perfStats?.gpu?.temperature != null ? `${perfStats.gpu.temperature.toFixed(0)}°C` : '--'}
+                </div>
+                <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
+                  显卡核心
+                </div>
+              </div>
             </div>
           ) : (
             <div style={{ textAlign: 'center', padding: '24px 0', color: COLORS.textMuted, fontSize: 13 }}>
@@ -1436,10 +1590,9 @@ background: snapshotRunning ? `${HEX_COLORS.success}20` : 'rgba(255,255,255,0.05
           )}
         </motion.div>
         </ErrorBoundary>
-      )}
 
       {/* ===== 系统监控历史图表 ===== */}
-      {snapshotRunning && snapshots.length > 0 && (
+      {histOpen && snapshots.length > 0 && (
         <ErrorBoundary fallback={
           <div style={{
             background: COLORS.cardBg, border: `1px solid ${COLORS.cardBorder}`,
@@ -1591,16 +1744,6 @@ borderRadius: '0 0 2px 2px',
             }}
           />
 
-          {/* 推理模式选择器 */}
-          <InferenceModeSelector
-            deviceStrategy={deviceStrategy}
-            modelAnalysis={null}
-            currentConfig={config}
-            onApplyMode={(params) => {
-              persistConfig(params)
-            }}
-          />
-
           {/* 已加载模型（实时运行状态）— A-3 */}
           {runtimeStatus && ((runtimeStatus.loaded && runtimeStatus.loaded.length > 0) || (runtimeStatus.servers && runtimeStatus.servers.length > 0)) && (
             <div>
@@ -1611,32 +1754,39 @@ borderRadius: '0 0 2px 2px',
                 <span style={{ fontSize: 11, color: COLORS.textMuted }}>实时运行状态（GPU/CPU、层数、端口）</span>
               </motion.div>
 
-              {/* GPU 显存总览 */}
-              {runtimeStatus.gpu && (runtimeStatus.gpu.memoryTotal ?? 0) > 0 && (
+              {/* GPU 显存总览（真实 nvidia-smi 数据，4 秒轮询；不可用如实显示） */}
+              {runtimeStatus.gpu && (
                 <motion.div variants={itemVariants} style={{
                   background: COLORS.cardBg, border: `1px solid ${COLORS.cardBorder}`,
                   borderRadius: 'var(--radius-2xl)', padding: '12px 16px', marginBottom: 8,
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                     <span style={{ fontSize: 12, color: COLORS.textSecondary }}>GPU 显存占用</span>
-                    <span style={{ fontSize: 12, color: COLORS.textSecondary, fontWeight: 600 }}>
-                      {Math.round(runtimeStatus.gpu.memoryUsed ?? 0)} / {Math.round(runtimeStatus.gpu.memoryTotal ?? 0)} MB
-                    </span>
+                    {(runtimeStatus.gpu.memoryTotal ?? 0) > 0 ? (
+                      <span style={{ fontSize: 12, color: COLORS.textSecondary, fontWeight: 600 }}>
+                        {Math.round(runtimeStatus.gpu.memoryUsed ?? 0)} / {Math.round(runtimeStatus.gpu.memoryTotal ?? 0)} MB
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 12, color: COLORS.textMuted }}>不可用（未检测到 NVIDIA GPU）</span>
+                    )}
                   </div>
                   <div style={{ height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                    <div style={{
-                      height: '100%', borderRadius: 3,
-                      width: `${Math.min(100, Math.round(((runtimeStatus.gpu.memoryUsed ?? 0) / Math.max(1, runtimeStatus.gpu.memoryTotal ?? 1)) * 100))}%`,
-                      background: 'linear-gradient(90deg, var(--accent), #a78bfa)',
-                      transition: 'width 0.4s ease',
-                    }} />
+                    {(runtimeStatus.gpu.memoryTotal ?? 0) > 0 ? (
+                      <div style={{
+                        height: '100%', borderRadius: 3,
+                        width: `${Math.min(100, Math.round(((runtimeStatus.gpu.memoryUsed ?? 0) / Math.max(1, runtimeStatus.gpu.memoryTotal ?? 1)) * 100))}%`,
+                        background: 'linear-gradient(90deg, var(--accent), #a78bfa)',
+                        transition: 'width 0.4s ease',
+                      }} />
+                    ) : null}
                   </div>
                 </motion.div>
               )}
 
               {(runtimeStatus.loaded ?? []).map((m: any) => {
-                const s = (runtimeStatus.servers ?? []).find((sv: any) => sv.id === m.id)
-                const isGpu = m.mode === 'gpu' || (m.gpuLayers ?? 0) > 0
+                const s = (runtimeStatus.servers ?? []).find((sv: any) => sv.modelId === m.id)
+                const isGpu = s ? (s.mode === 'gpu' || (s.gpuLayers ?? 0) > 0) : (m.mode === 'gpu' || (m.gpuLayers ?? 0) > 0)
+                const realGpuLayers = s ? (s.gpuLayers ?? m.gpuLayers ?? 0) : (m.gpuLayers ?? 0)
                 const memMb = typeof m.memoryUsage === 'number' && m.memoryUsage > 0
                   ? (m.memoryUsage > 1048576 ? `${Math.round(m.memoryUsage / 1048576)} MB` : `${Math.round(m.memoryUsage)} B`)
                   : ''
@@ -1666,7 +1816,7 @@ borderRadius: '0 0 2px 2px',
                         )}
                       </div>
                       <span style={{ fontSize: 11, color: COLORS.textMuted, flexShrink: 0 }}>
-                        {isGpu ? `GPU ${m.gpuLayers ?? 0} 层` : '纯 CPU'}
+                        {isGpu ? `GPU ${realGpuLayers} 层` : '纯 CPU'}
                         {memMb ? ` · ${memMb}` : ''}
                       </span>
                     </div>
@@ -1685,7 +1835,10 @@ borderRadius: '0 0 2px 2px',
                 </h3>
                 <span style={{ fontSize: 11, color: COLORS.textMuted }}>({registryModels.length} 个，长效保存，随软件启动)</span>
               </motion.div>
-              {registryModels.map((rm) => (
+              {registryModels.map((rm) => {
+                const rmServer = (runtimeStatus?.servers ?? []).find((sv: any) => sv.modelId === rm.id && sv.status === 'running')
+                const rmGpu = rmServer ? (rmServer.mode === 'gpu' || (rmServer.gpuLayers ?? 0) > 0) : rm.mode === 'gpu'
+                return (
                 <motion.div key={rm.id} variants={itemVariants} style={{
                   background: COLORS.cardBg,
                   border: rm.isDefault ? `1px solid ${HEX_COLORS.accent}50` : `1px solid ${COLORS.cardBorder}`,
@@ -1713,12 +1866,15 @@ background: rm.isDefault ? `${HEX_COLORS.accent}20` : 'rgba(255,255,255,0.03)',
                           <span style={{ fontSize: 14, fontWeight: 600, color: COLORS.textPrimary }}>{rm.name}</span>
                           <span style={{
                             fontSize: 10, padding: '2px 6px', borderRadius: 6,
-background: rm.mode === 'gpu' ? COLORS.successDim : COLORS.warningDim,
-                            color: rm.mode === 'gpu' ? COLORS.success : COLORS.warning,
+background: rmGpu ? COLORS.successDim : COLORS.warningDim,
+                            color: rmGpu ? COLORS.success : COLORS.warning,
                             fontWeight: 600,
-                          }}>{rm.mode === 'gpu' ? 'GPU' : 'CPU'}</span>
+                          }}>{rmGpu ? 'GPU' : 'CPU'}</span>
                           {rm.type === 'vision' && (
 <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: COLORS.violetDim, color: HEX_COLORS.violetLight, fontWeight: 600 }}>视觉</span>
+                          )}
+                          {rm.isMultimodal && rm.type !== 'vision' && (
+<span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: COLORS.violetDim, color: HEX_COLORS.violetLight, fontWeight: 600 }}>多模态</span>
                           )}
                           {rm.isDefault && (
 <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: `${HEX_COLORS.accent}15`, color: COLORS.accent, fontWeight: 600 }}>默认</span>
@@ -1727,9 +1883,49 @@ background: rm.mode === 'gpu' ? COLORS.successDim : COLORS.warningDim,
 <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {rm.modelPath}
                         </div>
+                        {(rm.type === 'vision' || rm.isMultimodal) && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                            <span style={{
+                              fontSize: 10, padding: '1px 5px', borderRadius: 5, flexShrink: 0,
+                              background: rm.mmprojPath ? `${HEX_COLORS.success}1f` : 'rgba(255,255,255,0.03)',
+                              color: rm.mmprojPath ? COLORS.success : COLORS.warning, fontWeight: 600,
+                            }}>{rm.mmprojPath ? '投影层已绑定' : '未绑定投影层'}</span>
+                            {rm.mmprojPath && (
+                              <span style={{ fontSize: 10, color: COLORS.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>
+                                {rm.mmprojPath.split(/[/\\]/).pop()}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+{/* v12.3 视觉投影层绑定/解绑 */}
+                      {(rm.type === 'vision' || rm.type === 'main' || rm.isMultimodal) && (
+                        <button onClick={() => openMmprojPicker(rm.id)} style={{
+                          padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
+                          fontFamily: 'inherit', fontSize: 11, fontWeight: 500,
+                          background: rm.mmprojPath ? `${HEX_COLORS.success}15` : 'rgba(255,255,255,0.03)',
+                          border: `1px solid ${rm.mmprojPath ? `${HEX_COLORS.success}40` : COLORS.cardBorder}`,
+                          color: rm.mmprojPath ? COLORS.success : COLORS.textSecondary,
+                        }}>{rm.mmprojPath ? '重选投影层' : '绑定投影层'}</button>
+                      )}
+                      {rm.mmprojPath && (
+                        <button onClick={() => unbindMmproj(rm.id)} title="解绑视觉投影层" style={{
+                          padding: '5px 8px', borderRadius: 8, cursor: 'pointer',
+                          fontFamily: 'inherit', fontSize: 11, fontWeight: 500,
+                          background: 'rgba(255,255,255,0.03)', border: `1px solid ${COLORS.cardBorder}`,
+                          color: COLORS.textMuted,
+                        }}>解绑</button>
+                      )}
+                      {/* 运行位置设置（折叠展开） */}
+                      <button onClick={() => setExpandedRuntimeId(expandedRuntimeId === rm.id ? null : rm.id)} style={{
+                        padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
+                        fontFamily: 'inherit', fontSize: 11, fontWeight: 500,
+                        background: expandedRuntimeId === rm.id ? `${HEX_COLORS.accent}15` : 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${expandedRuntimeId === rm.id ? `${HEX_COLORS.accent}40` : COLORS.cardBorder}`,
+                        color: expandedRuntimeId === rm.id ? COLORS.accent : COLORS.textSecondary,
+                      }}>运行设置</button>
                       {/* 设为默认 */}
                       {!rm.isDefault && (
                         <button onClick={() => setRegistryDefault(rm.id)} style={{
@@ -1758,13 +1954,84 @@ background: rm.mode === 'gpu' ? COLORS.successDim : COLORS.warningDim,
                       }}><Trash2 size={13} /></button>
                     </div>
                   </div>
+                  {/* 运行位置设置（默认折叠，点击「运行设置」展开） */}
+                  {expandedRuntimeId === rm.id && (<>
+                  <div style={{
+                    marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.05)',
+                    display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                  }}>
+                    <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 500 }}>运行位置</span>
+                    <select
+                      value={runLocationDraft[rm.id] ?? rm.runLocation ?? 'auto'}
+                      onChange={e => setRunLocationDraft(prev => ({ ...prev, [rm.id]: e.target.value as any }))}
+                      style={{
+                        padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
+                        fontFamily: 'inherit', fontSize: 12,
+                        background: 'rgba(255,255,255,0.05)', border: `1px solid ${COLORS.cardBorder}`,
+                        color: COLORS.textPrimary, outline: 'none',
+                      }}
+                    >
+                      <option value="auto">自动（显存自适应）</option>
+                      <option value="cpu">纯 CPU</option>
+                      <option value="gpu">纯 GPU</option>
+                      <option value="layered">分层（自定义层数）</option>
+                    </select>
+                    {(() => {
+                      const loc = runLocationDraft[rm.id] ?? rm.runLocation ?? 'auto'
+                      if (loc === 'cpu') return <span style={{ fontSize: 11, color: COLORS.warning }}>全部层在内存运行（gpuLayers=0）</span>
+                      if (loc === 'gpu') {
+                        const layers = gpuLayersDraft[rm.id] ?? rm.gpuLayers ?? 35
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input type="number" min={1} max={99}
+                              value={gpuLayersDraft[rm.id] ?? rm.gpuLayers ?? 35}
+                              onChange={e => setGpuLayersDraft(prev => ({ ...prev, [rm.id]: parseInt(e.target.value) || 1 }))}
+                              style={{
+                                width: 70, padding: '5px 8px', borderRadius: 8,
+                                background: 'rgba(255,255,255,0.05)', border: `1px solid ${COLORS.cardBorder}`,
+                                color: COLORS.textPrimary, fontSize: 12, outline: 'none',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            />
+                            <span style={{ fontSize: 11, color: COLORS.textMuted }}>层（当前 {layers} 层 offload）</span>
+                          </div>
+                        )
+                      }
+                      if (loc === 'layered') {
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input type="number" min={1} max={99}
+                              value={gpuLayersDraft[rm.id] ?? rm.gpuLayers ?? 35}
+                              onChange={e => setGpuLayersDraft(prev => ({ ...prev, [rm.id]: parseInt(e.target.value) || 1 }))}
+                              style={{
+                                width: 70, padding: '5px 8px', borderRadius: 8,
+                                background: 'rgba(255,255,255,0.05)', border: `1px solid ${COLORS.cardBorder}`,
+                                color: COLORS.textPrimary, fontSize: 12, outline: 'none',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            />
+                            <span style={{ fontSize: 11, color: COLORS.textMuted }}>层 offload 至显存，其余在内存</span>
+                          </div>
+                        )
+                      }
+                      return <span style={{ fontSize: 11, color: COLORS.textMuted }}>按显存自动分级</span>
+                    })()}
+                    <button onClick={() => applyRunLocation(rm)} style={{
+                      marginLeft: 'auto', padding: '5px 12px', borderRadius: 8, cursor: 'pointer',
+                      fontFamily: 'inherit', fontSize: 11, fontWeight: 600,
+                      background: `${HEX_COLORS.accent}20`, border: `1px solid ${HEX_COLORS.accent}40`,
+                      color: COLORS.accent,
+                    }}>应用并重启</button>
+                  </div>
+                  </>)}
                 </motion.div>
-              ))}
+                )
+              })}
             </div>
           )}
 
           {/* 模型卡片列表 — 自动换行网格布局，带滚动容器防止卡片遮挡 */}
-          <div style={{ display: 'flex', gap: 16, paddingBottom: 8, flexWrap: 'wrap', maxHeight: 'calc(100vh - 520px)', overflowY: 'auto', minHeight: 60, alignContent: 'flex-start' }}>
+          <div style={{ display: 'flex', gap: 16, paddingBottom: 8, flexWrap: 'wrap', maxHeight: 'calc(100vh - 480px)', overflowY: 'auto', minHeight: 60, alignContent: 'flex-start' }}>
           {models.map((model) => (
             <motion.div key={model.id} variants={itemVariants} style={{
               background: COLORS.cardBg,
@@ -2041,10 +2308,10 @@ fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
               <div style={sliderRowStyle}>
                 <div style={sliderLabelStyle}>
                   <span>Context Size</span>
-                  <span style={{ color: COLORS.textMuted, fontSize: 11 }}>上下文长度 (512-32768)</span>
+                  <span style={{ color: COLORS.textMuted, fontSize: 11 }}>上下文长度 (512-262144)</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, maxWidth: 300 }}>
-                  <input type="number" min={512} max={32768} step={512} value={config.contextSize}
+                  <input type="number" min={512} max={262144} step={512} value={config.contextSize}
                     onChange={e => handleConfigChange('contextSize', parseInt(e.target.value) || 4096)}
                     style={{
                       width: 80, padding: '6px 10px', borderRadius: 8, textAlign: 'center',
@@ -2068,8 +2335,12 @@ fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
         <LocalAiPanel />
       </>)}
 
-      {/* ===== 联动模式 Tab ===== */}
-      {activeTab === 'tandem' && <TandemPanel />}
+      {/* ===== 智能调度 Tab（集成自原 /scheduler 独立页） ===== */}
+      {activeTab === 'scheduler' && (
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <SchedulerPage />
+        </div>
+      )}
 
       {/* ===== 全局推理参数（可折叠） ===== */}
       <motion.div variants={itemVariants} style={{
@@ -2095,7 +2366,7 @@ fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px 20px' }}>
           {[
             { key: 'gpuLayers', label: 'GPU 层数', min: 0, max: 99, step: 1 },
-            { key: 'contextSize', label: '上下文长度', min: 512, max: 32768, step: 512 },
+            { key: 'contextSize', label: '上下文长度', min: 512, max: 262144, step: 512 },
             { key: 'batchSize', label: '批处理大小', min: 1, max: 2048, step: 1 },
             { key: 'threads', label: 'CPU 线程数', min: 1, max: 32, step: 1 },
             { key: 'temperature', label: '温度', min: 0, max: 2, step: 0.1 },

@@ -528,9 +528,9 @@ class MobileChannelEngine {
             logger.error(`[MobileChannel] WebSocketServer error: ${err}`)
           })
 
-          // 监听指定端口
+          // 监听指定端口（仅绑定本地回环，不暴露到局域网）
           const port = this.config.port || DEFAULT_CONFIG.port
-          this.server.listen(port, () => {
+          this.server.listen(port, '127.0.0.1', () => {
             try {
               const address = this.server?.address()
               if (address && typeof address === 'object') {

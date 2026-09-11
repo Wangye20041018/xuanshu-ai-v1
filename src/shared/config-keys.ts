@@ -28,6 +28,11 @@ export const CONFIG_KEYS = {
   CONTROL_GLOW_BRIGHTNESS: 'controlGlowBrightness',
   CONTROL_GLOW_COLOR: 'controlGlowColor',
   CONTROL_GLOW_INTENSITY: 'controlGlowIntensity',
+  // ===== 语音交互球（悬浮球） =====
+  FLOATING_BALL_SNAP_TO_EDGE: 'floatingBallSnapToEdge',
+  FLOATING_BALL_VOICE_ID: 'floatingBallVoiceId',
+  FLOATING_BALL_WAKE_MODE: 'floatingBallWakeMode',
+  FLOATING_BALL_AUTO_START: 'floatingBallAutoStart',
 } as const
 
 export const skillKey = (skillId: string) => `skill_${skillId}`

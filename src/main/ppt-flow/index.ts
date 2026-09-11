@@ -13,6 +13,7 @@ import { ipcMain } from 'electron'
 import { executeSkillIntent } from '../skill-pack/executor'
 import { logger } from '../../shared/logger'
 import { runKeyboardWorkflow } from './keyboard-workflow'
+import { modelManager } from '../model-manager'
 
 export interface PptCreateParams {
   /** 主题，如"年度总结汇报" */
@@ -42,7 +43,6 @@ async function generateOutline(params: PptCreateParams): Promise<PptOutline> {
 
   // 尝试调用本地模型生成
   try {
-    const { modelManager } = await import('../model-manager')
     const prompt = [
       `请为演示文稿《${topic}》生成大纲，共 ${pageCount} 页。`,
       '输出格式（严格 JSON，不要多余文字）：',

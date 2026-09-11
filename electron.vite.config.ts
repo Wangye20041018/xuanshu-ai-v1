@@ -1,4 +1,4 @@
-import { defineConfig } from 'electron-vite'
+﻿import { defineConfig } from 'electron-vite'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
@@ -66,7 +66,14 @@ export default defineConfig({
     css: {
       postcss: false
     },
-    /** 将项目 assets/ 目录作为公共资源目录，dev 和 build 均生效 */
+    /** 灏嗛」鐩?assets/ 鐩綍浣滀负鍏叡璧勬簮鐩綍锛宒ev 鍜?build 鍧囩敓鏁?*/
+
+    /** 强制监听 IPv4，解决 Electron 白屏问题 */
+    server: {
+      host: '127.0.0.1',
+      port: 5173,
+      strictPort: true,
+    },
     publicDir: path.resolve(__dirname, 'assets'),
     build: {
       outDir: 'out/renderer',

@@ -36,6 +36,15 @@ export const COLORS = {
   dangerDim: 'var(--danger-dim)',
   warningDim: 'var(--warning-dim)',
   violetDim: 'var(--violet-dim)',
+  // v3 任务运行状态语义色（UI-1 步骤 / UI-2 工具行）
+  statusPending: 'var(--status-pending)',
+  statusRunning: 'var(--status-running)',
+  statusRunningDim: 'var(--status-running-dim)',
+  statusDone: 'var(--status-done)',
+  statusDoneDim: 'var(--status-done-dim)',
+  statusFailed: 'var(--status-failed)',
+  statusFailedDim: 'var(--status-failed-dim)',
+  statusWarn: 'var(--status-warn)',
 } as const
 
 /**
@@ -51,8 +60,8 @@ export const HEX_COLORS = {
   violet: '#8b5cf6',
   violetLight: '#a78bfa',
   blue: '#3b82f6',
-  bg: '#1a1a1c',
-  cardBg: '#28282a',
+  bg: '#1a1b1d',
+  cardBg: '#27282c',
   cardBorder: 'rgba(255,255,255,0.06)',
   cardBorderHover: 'rgba(255,255,255,0.14)',
   textPrimary: '#e8e8ec',
@@ -74,6 +83,15 @@ export const HEX_COLORS = {
   dangerDim: 'rgba(212,112,106,0.08)',
   warningDim: 'rgba(245,158,11,0.10)',
   violetDim: 'rgba(139,92,246,0.12)',
+  // v3 任务运行状态语义色（字面量，供内联 alpha 拼接，值与 globals.css 一一对应）
+  statusPending: '#7e7e88',
+  statusRunning: '#4b8ef1',
+  statusRunningDim: 'rgba(75,142,241,0.14)',
+  statusDone: '#3fb97b',
+  statusDoneDim: 'rgba(63,185,123,0.14)',
+  statusFailed: '#ef4444',
+  statusFailedDim: 'rgba(239,68,68,0.12)',
+  statusWarn: '#f59e0b',
 } as const
 
 export const containerVariants = {

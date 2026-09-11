@@ -19,6 +19,7 @@ try {
 }
 import { createLogger } from '../../shared/logger';
 import type { CompressionStats, ConversationCompressor, LocalInferenceFn } from './compressor';
+import { memorySkeleton, sessionSummaryStore } from './structured-memory';
 
 const logger = createLogger('ContextWindowManager');
 
@@ -41,8 +42,13 @@ export interface ContextStats {
   memoryTokens: number;
   historyTokens: number;
   currentTokens: number;
+  /** 当前上下文已用总 token 数（system+memory+history+current） */
+  usedTokens: number;
   totalTokens: number;
+  /** 上下文窗口上限 token 数（已按模型 contextSize/显存预算对齐） */
   maxTokens: number;
+  /** 当前轮输入 token 数（L3 当前层） */
+  currentInputTokens: number;
   /** 历史压缩比例 0-1，未压缩时为 0 */
   compressionRatio: number;
   /** 已压缩的对话轮次数量 */
@@ -121,6 +127,7 @@ export class ContextWindowManager {
     messages: ChatMessage[],
     systemPrompt: string,
     memoryItems: MemoryItem[],
+    structured?: { skeleton?: string; summaries?: string },
   ): BuildContextResult {
     this.needCompression = false;
     const layers: ContextLayer[] = [];
@@ -134,6 +141,46 @@ export class ContextWindowManager {
       priority: 10,
       trimmable: false,
     });
+
+    // ---- L0.5：全局骨架层（MEMORY.md，结构化组包 · 上下文常驻内存注入） ----
+    // 三层结构化组包第 1 层：全局骨架（工程/用户常驻记忆）。放内存，注入组包，不随压缩删除。
+    const extraSystemContent: ChatMessage[] = [];
+    if (structured?.skeleton) {
+      // 精简重塑 v1：常驻骨架注入设字符上限，防止 MEMORY.md 长期累积挤占内存窗口
+      const SKELETON_MAX_CHARS = 3000
+      const rawSkeleton = structured.skeleton.length > SKELETON_MAX_CHARS
+        ? structured.skeleton.slice(0, SKELETON_MAX_CHARS) + '…(骨架超限截断)'
+        : structured.skeleton
+      const skeletonText = `[Global Memory / MEMORY.md]:\n${rawSkeleton}`;
+      const skeletonTokens = this.countTokens(skeletonText);
+      layers.push({
+        name: 'L0.5-global-memory',
+        tokens: skeletonTokens,
+        content: skeletonText,
+        priority: 9,
+        trimmable: false,
+      });
+      extraSystemContent.push({ role: 'system', content: skeletonText });
+    }
+
+    // ---- L0.6：会话摘要层（压缩触发摘要 + 运行记录，RAM 常驻注入） ----
+    if (structured?.summaries) {
+      // 精简重塑 v1：会话摘要注入上限，保留最近摘要、截断陈旧累积
+      const SUMMARIES_MAX_CHARS = 2400
+      const rawSummaries = structured.summaries.length > SUMMARIES_MAX_CHARS
+        ? structured.summaries.slice(-SUMMARIES_MAX_CHARS) + '…(旧摘要超限截断)'
+        : structured.summaries
+      const summaryText = `[Session Summaries]:\n${rawSummaries}`;
+      const summaryTokens = this.countTokens(summaryText);
+      layers.push({
+        name: 'L0.6-session-summary',
+        tokens: summaryTokens,
+        content: summaryText,
+        priority: 7,
+        trimmable: true, // 超阈兜底时可裁剪会话摘要层
+      });
+      extraSystemContent.push({ role: 'system', content: summaryText });
+    }
 
     // ---- L1：记忆层 ----
     const memoryText = this.formatMemoryItems(memoryItems);
@@ -185,15 +232,18 @@ export class ContextWindowManager {
     });
 
     // ---- 统计 ----
-    const totalTokens = systemTokens + memoryTokens + historyTokens + currentTokens;
+    const extraSystemTokens = extraSystemContent.reduce((acc, m) => acc + this.countTokens(m.content), 0);
+    const totalTokens = systemTokens + extraSystemTokens + memoryTokens + historyTokens + currentTokens;
 
     this.stats = {
-      systemTokens,
+      systemTokens: systemTokens + extraSystemTokens,
       memoryTokens,
       historyTokens,
       currentTokens,
+      usedTokens: totalTokens,
       totalTokens,
       maxTokens: this.maxTokens,
+      currentInputTokens: currentTokens,
       compressionRatio: 0,
       compressedRounds: 0,
     };
@@ -215,12 +265,13 @@ export class ContextWindowManager {
     }
 
     logger.info(
-      `Context built: L0=${systemTokens} L1=${memoryTokens} L2=${historyTokens} L3=${currentTokens} total=${totalTokens}`,
+      `Context built: L0=${systemTokens} L0.5/6=${extraSystemTokens} L1=${memoryTokens} L2=${historyTokens} L3=${currentTokens} total=${totalTokens}`,
     );
 
     return {
       messages: [
         { role: 'system', content: systemPrompt },
+        ...extraSystemContent,
         ...this.wrapMemoryAsMessages(memoryItems),
         ...historyMessages,
         ...currentMessages,
@@ -228,6 +279,28 @@ export class ContextWindowManager {
       stats: this.stats,
       needCompression: this.needCompression,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // 结构化组包入口（三层：全局骨架 MEMORY.md + 会话摘要 + 当前窗口）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 构建结构化上下文：自动从 RAM 常驻层（memorySkeleton / sessionSummaryStore）取
+   * 全局骨架 + 会话摘要，作为 L0.5/L0.6 注入 buildContext。
+   * 调用方负责确保 structuredMemory 已初始化（initStructuredMemory）。
+   */
+  buildStructuredContext(
+    messages: ChatMessage[],
+    systemPrompt: string,
+    memoryItems: MemoryItem[],
+  ): BuildContextResult {
+    const skeleton = memorySkeleton.getSkeleton();
+    const summaries = sessionSummaryStore.composeInjection();
+    return this.buildContext(messages, systemPrompt, memoryItems, {
+      skeleton: skeleton || undefined,
+      summaries: summaries || undefined,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -367,8 +440,10 @@ export class ContextWindowManager {
       memoryTokens: 0,
       historyTokens: 0,
       currentTokens: 0,
+      usedTokens: 0,
       totalTokens: 0,
       maxTokens: this.maxTokens,
+      currentInputTokens: 0,
       compressionRatio: 0,
       compressedRounds: 0,
     };

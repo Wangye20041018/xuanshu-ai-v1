@@ -8,8 +8,8 @@ class ProviderRegistry {
   registerProvider(provider: LLMProvider): void {
     if (this.providers.has(provider.id)) {
       logger.warn(`[ProviderRegistry] 覆盖已存在的 Provider: ${provider.id}`)
-      try { this.removeProvider(provider.id) } catch { /* 非关键操作，失败可安全忽略 */ }
-    // 非关键操作，失败可安全忽略
+      // 非关键操作，失败可安全忽略
+      try { this.removeProvider(provider.id) } catch { /* ignore */ }
     }
     this.providers.set(provider.id, provider)
   }

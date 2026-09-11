@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * 自我改造 —— IPC Handler 注册
  *
  * 通道：
@@ -13,6 +13,7 @@
 
 import { ipcMain, BrowserWindow, app } from 'electron'
 import { selfModifyService } from './self-modify.service'
+import { getStore } from '../ipc/config.ipc'
 import type {
   ApplyResult,
   ChangeSet,
@@ -23,7 +24,6 @@ import type {
 /** 从配置读取写模式开关（默认关） */
 async function readWriteEnabled(): Promise<boolean> {
   try {
-    const { getStore } = await import('../ipc/config.ipc')
     const v: unknown = getStore().get('selfModifyWriteEnabled', false)
     return v === true
   } catch {

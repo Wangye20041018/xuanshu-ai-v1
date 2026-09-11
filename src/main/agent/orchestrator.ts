@@ -16,6 +16,9 @@ import { logger } from '../../shared/logger'
 import { ipcMain } from 'electron'
 import { agentStore } from './agent-store'
 import { runAgent } from './agent-runtime'
+import { modelManager } from '../model-manager'
+import { sendToAllWindows } from '../utils/broadcast'
+import type { TaskStepEvent } from '../../shared/agent-types'
 import type {
   AgentRunEvent,
   SwarmResult,
@@ -31,6 +34,16 @@ function swarmId(): string {
 
 function stepId(i: number): string {
   return `step-${Date.now().toString(36)}-${i}`
+}
+
+/** A-4：推送 xuanshu:task-step 事件（供豆包 UI 消费） */
+function emitTaskStep(stepId: string, title: string, status: 'pending' | 'running' | 'done' | 'failed', detail?: string): void {
+  try {
+    const payload: TaskStepEvent = { stepId, title, status, detail, ts: Date.now() }
+    sendToAllWindows('xuanshu:task-step', payload)
+  } catch (e) {
+    logger.warn(`[Orchestrator] task-step 事件推送失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 /** AI 输出的步骤结构 */
@@ -125,7 +138,6 @@ ${agentLines}
 
 /** 调模型生成编排（返回原始文本） */
 async function generateOnce(prompt: string): Promise<string> {
-  const { modelManager } = await import('../model-manager')
   const resp = await modelManager.generateResponse(prompt, { temperature: 0.4, maxTokens: 1024 })
   return typeof resp === 'string' ? resp : (resp as { content?: string })?.content || String(resp)
 }
@@ -203,7 +215,8 @@ class Orchestrator {
   }
 
   /**
-   * 运行群协作任务（串行拓扑排序执行）。
+   * 运行群协作任务（按 DAG 分层并行执行）。
+   * 同一层内（无相互依赖的步骤）并行派发；跨层串行接力。
    * 通过 onEvent 回传进度；最终返回 SwarmResult。
    */
   async run(
@@ -223,11 +236,22 @@ class Orchestrator {
     const stepMap = new Map(task.steps.map((s) => [s.id, s]))
     const outputs = new Map<string, string>()
 
-    for (const sid of order) {
-      const step = stepMap.get(sid)!
+    // Kahn 分层：每次取当前 indegree=0 的步骤组成一层，同层并行执行
+    const indegree = new Map<string, number>()
+    const dependents = new Map<string, string[]>()
+    for (const s of task.steps) {
+      indegree.set(s.id, s.dependsOn.length)
+      dependents.set(s.id, [])
+    }
+    for (const s of task.steps) {
+      for (const dep of s.dependsOn) dependents.get(dep)!.push(s.id)
+    }
+
+    const runStep = async (step: SwarmStep): Promise<void> => {
       onEvent?.({ type: 'step-start', stepId: step.id, agentId: step.agentId, message: step.instruction })
+      // A-4：任务步骤事件推送渲染层（豆包 UI 消费）
+      emitTaskStep(step.id, step.instruction, 'running')
       try {
-        // 拼接前置步骤输出作为上下文
         const contextParts: string[] = []
         for (const dep of step.dependsOn) {
           if (outputs.has(dep)) contextParts.push(`[前序步骤输出]\n${outputs.get(dep)}`)
@@ -252,11 +276,29 @@ class Orchestrator {
         outputs.set(step.id, finalOutput || '（该步骤未返回内容）')
         results.push({ stepId: step.id, agentId: step.agentId, output: finalOutput, status: 'done' })
         onEvent?.({ type: 'step-done', stepId: step.id, agentId: step.agentId, output: finalOutput })
+        emitTaskStep(step.id, step.instruction, 'done', finalOutput.slice(0, 200))
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         results.push({ stepId: step.id, agentId: step.agentId, output: '', status: 'failed' })
         onEvent?.({ type: 'step-failed', stepId: step.id, agentId: step.agentId, message: msg })
+        emitTaskStep(step.id, step.instruction, 'failed', msg)
       }
+    }
+
+    // 分层并行执行
+    let ready = Array.from(indegree.entries()).filter(([, d]) => d === 0).map(([id]) => id)
+    let guard = 0
+    while (ready.length > 0 && guard < task.steps.length * 2 + 1) {
+      guard++
+      await Promise.all(ready.map((sid) => runStep(stepMap.get(sid)!)))
+      const next: string[] = []
+      for (const sid of ready) {
+        for (const dep of dependents.get(sid)!) {
+          indegree.set(dep, (indegree.get(dep) || 1) - 1)
+          if (indegree.get(dep) === 0) next.push(dep)
+        }
+      }
+      ready = next
     }
 
     const summary = results
@@ -264,6 +306,31 @@ class Orchestrator {
       .join('\n\n')
 
     return { taskId: task.id, steps: results, summary }
+  }
+
+  /**
+   * 按团队模板一键成团运行（第三批）。
+   * 解析模板角色 → 实际智能体 → 组装 SwarmTask → 分层并行 run。
+   */
+  async runTemplate(
+    templateId: string,
+    goal: string,
+    onEvent?: (ev: { type: string; stepId?: string; agentId?: string; message?: string; output?: string }) => void,
+  ): Promise<{ success: boolean; data?: SwarmResult; error?: string }> {
+    const { getTeamTemplate, resolveTemplate } = await import('./team-templates')
+    const template = getTeamTemplate(templateId)
+    if (!template) return { success: false, error: `团队模板不存在: ${templateId}` }
+
+    const agents = agentStore.list()
+    const resolved = resolveTemplate(template, String(goal || '').trim(), agents)
+    if (!resolved.success || !resolved.task) {
+      return { success: false, error: resolved.error || '模板解析失败' }
+    }
+
+    onEvent?.({ type: 'team-start', message: `团队「${template.name}」开始运行：${template.pipeline}` })
+    const result = await this.run(resolved.task, onEvent)
+    onEvent?.({ type: 'team-done', message: `团队「${template.name}」运行完成` })
+    return { success: true, data: result }
   }
 }
 
@@ -291,6 +358,35 @@ export function setupSwarmHandlers(): void {
 
   ipcMain.handle('swarm:status', async () => {
     return { success: true, data: { agents: agentStore.list().length, status: 'idle' } }
+  })
+
+  // ===== 团队模板（第三批）=====
+  ipcMain.handle('team:list', async () => {
+    try {
+      const { TEAM_TEMPLATES } = await import('./team-templates')
+      return { success: true, data: TEAM_TEMPLATES }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('team:run-template', async (event, payload: { templateId: string; goal: string }) => {
+    try {
+      const sender = event.sender
+      const send = (p: unknown): void => {
+        try {
+          if (!sender.isDestroyed()) sender.send('swarm:event', p)
+        } catch {
+          /* ignore */
+        }
+      }
+      const result = await orchestrator.runTemplate(String(payload?.templateId || ''), String(payload?.goal || ''), (ev) =>
+        send({ taskId: `team-${payload?.templateId}`, ...ev }),
+      )
+      return result
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   logger.debug('[Orchestrator] setupSwarmHandlers registered')

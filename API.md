@@ -1,6 +1,9 @@
 # 玄枢AI Engine API 文档
 
-> API 版本: 1.0 | 引擎版本: v11.2.0 | 默认端口: 8765
+> **⚠️ 已废弃** — 本文档面向旧版 Python Flask 引擎（v11.2.0），该引擎在 v10+ 版本中已被 TypeScript Electron 主进程架构替代。`engine/` 目录仅保留微信中转等辅助服务。
+> 当前 API 通过 Electron IPC 通道提供，详见 `src/main/ipc/` 和 `src/preload/index.ts`。
+
+> API 版本: 1.0 | 引擎版本: v11.2.0（已废弃） | 默认端口: 8765
 
 ---
 

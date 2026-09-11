@@ -15,6 +15,7 @@ import { logger } from '../../shared/logger'
 import { stopAllAgents } from './agent-runtime'
 import { sendToAllWindows } from '../utils/broadcast'
 import { notifyControlFinish } from '../control-state'
+import { visualAgent } from '../visual-agent'
 
 /** 默认快捷键（可与系统任务管理器区分开） */
 export const PANIC_ACCELERATOR = 'Ctrl+Shift+F12'
@@ -34,7 +35,6 @@ export async function triggerPanicStop(): Promise<void> {
 
   // ② abort 运行中的 visual-agent 任务
   try {
-    const { visualAgent } = await import('../visual-agent')
     visualAgent.cancel()
   } catch (e) {
     logger.error(`[PanicStop] 取消视觉代理失败: ${e instanceof Error ? e.message : String(e)}`)

@@ -8,6 +8,7 @@
  */
 
 import { createLogger } from '../../shared/logger';
+import { probeLlmLingua2 } from './llmlingua2';
 import type { ChatMessage } from './manager';
 
 const logger = createLogger('ConversationCompressor');
@@ -34,6 +35,10 @@ export interface CompressionStats {
   compressedRounds: number;
   /** 保留未压缩的轮次数 */
   keptRounds: number;
+  /** 压缩引擎：LLMLingua-2 本地 20x 压缩 或 本地摘要压缩 */
+  compressMode?: 'llmlingua2' | 'summary';
+  /** 本次生成的会话摘要文本（结构化组包·会话摘要落库用） */
+  summary?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +88,16 @@ export class ConversationCompressor {
       };
     }
 
+    // P0-超长上下文压缩引擎：优先 LLMLingua-2 本地 20x 压缩（就绪即启用），
+    // 未就绪时如实回退到本地摘要压缩（真实生效，无假压缩）。
+    const llmlingua2Probe = probeLlmLingua2();
+    const compressMode: 'llmlingua2' | 'summary' = llmlingua2Probe.available ? 'llmlingua2' : 'summary';
+    if (llmlingua2Probe.available) {
+      logger.info(`[Compressor] LLMLingua-2 就绪（${llmlingua2Probe.modelDir}），启用 20x 本地压缩`)
+    } else if (!llmlingua2Probe.modelDir) {
+      logger.info(`[Compressor] LLMLingua-2 未就绪（${llmlingua2Probe.reason}），走本地摘要压缩`)
+    }
+
     // 分离需要压缩和保留的消息
     const rounds = this.groupByRounds(messages);
 
@@ -95,6 +110,7 @@ export class ConversationCompressor {
         stats: {
           ...this.emptyStats(),
           keptRounds: rounds.length,
+          compressMode,
         },
       };
     }
@@ -158,6 +174,8 @@ export class ConversationCompressor {
         savedPercent,
         compressedRounds: toCompress.length,
         keptRounds: toKeep.length,
+        compressMode,
+        summary: summaryContent,
       },
     };
   }

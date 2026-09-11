@@ -33,7 +33,7 @@ export interface RouteSignal {
   hasImage?: boolean
   imageUrls?: string[]
   fileType?: string
-  triggerWindow?: 'voice-ball' | 'code-editor' | 'file-explorer' | 'chat' | string
+  triggerWindow?: 'code-editor' | 'file-explorer' | 'chat' | string
   audioText?: string
   personaId?: string
 }

@@ -10,6 +10,8 @@ declare global {
       on: (channel: import('./index').IpcChannels, callback: (event: import('electron').IpcRendererEvent, ...args: unknown[]) => void) => () => void
       once: (channel: import('./index').IpcChannels, callback: (...args: unknown[]) => void) => void
       removeAllListeners: (channel: import('./index').IpcChannels) => void
+      // 本地导入扩展：获取文件真实路径
+      getPathForFile: (file: File) => string
       // TTS 相关
       speechSynthesis: SpeechSynthesis
       SpeechSynthesisUtterance: typeof SpeechSynthesisUtterance

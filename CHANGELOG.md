@@ -2,6 +2,28 @@
 
 All notable changes to 玄枢AI (Xuanshu AI) will be documented in this file.
 
+## [v12.3.0] — 2026-08-30
+
+### Added
+- **ReAct 智能体框架**：完整的思考→行动→观察循环，支持工具注册、危险操作确认、记忆隔离
+- **智能模型调度系统**：任务识别→选模型→自动加载→推理→失败回退的完整链路
+- **双模型协同（Tandem）**：支持 dual/partner/mentor/debate 四种协同模式
+- **悬浮球语音交互**：3D 粒子球体 + 语音识别字幕 + 语音闭环（识别→意图→对话→TTS）
+- **内置浏览器**：支持标签页管理、书签、扩展安装、内容提取、截图
+- **技能包系统**：技能包匹配、执行、学习管理
+- **MCP 协议支持**：MCP 工具注册与调用
+- **数据备份/恢复**：支持用户数据导出、导入、校验
+
+### Changed
+- Python Flask 后端引擎正式废弃，全面迁移到 TypeScript Electron 主进程架构
+- IPC 通道从 31 个扩展到 200+ 个，覆盖所有功能模块
+- 项目结构重大重构：新增 agent/、scheduler/、tandem-manager/、floating-ball/、browser/、skill-pack/、mcp/、backup/ 等模块
+
+### Security
+- 移动通道绑定地址限制为 127.0.0.1，避免局域网暴露
+- 应用权限从 requireAdministrator 降为 asInvoker
+- 禁用自动更新和代码签名（个人自用场景）
+
 ## [v11.2.0] — 2026-08-07
 
 ### Added

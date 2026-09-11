@@ -36,6 +36,7 @@ interface AppConfig {
   wakeWordEnabled: boolean
   wakeWordSensitivity: number
   phoneSyncEnabled: boolean
+  intentEnabled: boolean
 }
 
 export type { ChatMessage, Conversation, ProviderConfig, VoiceConfig, AppConfig }

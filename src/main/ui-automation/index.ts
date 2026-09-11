@@ -25,7 +25,7 @@ const logger = createLogger('UIAutomation')
 
 export { UIAScanner } from './uia-scanner'
 export { UIAExecutor } from './uia-executor'
-export { VisionFallback, VisionQualityInspector, UIAVision } from './uia-vision'
+export { VisionFallback, VisionQualityInspector } from './uia-vision'
 
 export type {
   UIAElement,

@@ -297,53 +297,66 @@ ${ctx.attempts} / ${ctx.maxAttempts}
   private async invokeModel(prompt: string, options?: GenerateParams): Promise<string> {
     const fullPrompt = `${COMPUTER_CONTROL_SYSTEM_PROMPT}\n\n${prompt}`
 
+    // 视觉模型运行位置（用户显式设置）：纯 CPU 时直接走 CpuInferenceEngine，跳过 SGLang/tandem GPU 路径
+    let visionRunLocation: 'auto' | 'cpu' | 'gpu' | 'layered' = 'auto'
     try {
-      // 优先尝试 SGLang (GPU)
-      try {
-        const resp = await fetch('http://127.0.0.1:30000/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'default',
-            messages: [{ role: 'user', content: fullPrompt }],
-            temperature: options?.temperature ?? 0.7,
-            max_tokens: options?.maxTokens ?? 1024,
-            top_p: options?.topP ?? 0.9,
-          }),
-          signal: AbortSignal.timeout(60000),
-        })
-        if (resp.ok) {
-          const data: any = await resp.json()
-          return data.choices?.[0]?.message?.content || ''
-        } else {
-          const body = await resp.text().catch(() => '')
-          logger.error(`[Visual] SGLang 返回 ${resp.status}: ${body.slice(0, 200)}`)
-        }
-      } catch (e) {
-        logger.error('[VisualReasoning] SGLang模型调用失败:', e)
-      }
+      const { modelRegistry } = await import('../model-registry')
+      const visionModel = (modelRegistry.list?.() || []).find((m: any) => m.type === 'vision')
+      visionRunLocation = (visionModel?.runLocation as any) || 'auto'
+    } catch { /* registry 不可用时回退自动 */ }
+    const forceCpuVision = visionRunLocation === 'cpu'
+    logger.debug(`[VisualReasoning] 视觉推理运行位置: ${visionRunLocation}${forceCpuVision ? '（纯 CPU，直走 CpuInferenceEngine）' : ''}`)
 
-      // 回退1：tandem 主模型（llama-server 8082，已在运行则零额外开销）
-      try {
-        const resp = await fetch('http://127.0.0.1:8082/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'default',
-            messages: [{ role: 'user', content: fullPrompt }],
-            temperature: options?.temperature ?? 0.7,
-            max_tokens: options?.maxTokens ?? 1024,
-            top_p: options?.topP ?? 0.9,
-          }),
-          signal: AbortSignal.timeout(60000),
-        })
-        if (resp.ok) {
-          const data: any = await resp.json()
-          const content = data.choices?.[0]?.message?.content || ''
-          if (content) return content
+    try {
+      // GPU/分层/自动：优先尝试 SGLang (GPU)，再回退 tandem llama-server；纯 CPU 直走 CPU 引擎
+      if (!forceCpuVision) {
+        // 优先尝试 SGLang (GPU)
+        try {
+          const resp = await fetch('http://127.0.0.1:30000/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'default',
+              messages: [{ role: 'user', content: fullPrompt }],
+              temperature: options?.temperature ?? 0.7,
+              max_tokens: options?.maxTokens ?? 1024,
+              top_p: options?.topP ?? 0.9,
+            }),
+            signal: AbortSignal.timeout(60000),
+          })
+          if (resp.ok) {
+            const data: any = await resp.json()
+            return data.choices?.[0]?.message?.content || ''
+          } else {
+            const body = await resp.text().catch(() => '')
+            logger.error(`[Visual] SGLang 返回 ${resp.status}: ${body.slice(0, 200)}`)
+          }
+        } catch (e) {
+          logger.error('[VisualReasoning] SGLang模型调用失败:', e)
         }
-      } catch (e) {
-        logger.error('[VisualReasoning] tandem主模型调用失败:', e)
+
+        // 回退1：tandem 主模型（llama-server 8082，已在运行则零额外开销）
+        try {
+          const resp = await fetch('http://127.0.0.1:8082/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'default',
+              messages: [{ role: 'user', content: fullPrompt }],
+              temperature: options?.temperature ?? 0.7,
+              max_tokens: options?.maxTokens ?? 1024,
+              top_p: options?.topP ?? 0.9,
+            }),
+            signal: AbortSignal.timeout(60000),
+          })
+          if (resp.ok) {
+            const data: any = await resp.json()
+            const content = data.choices?.[0]?.message?.content || ''
+            if (content) return content
+          }
+        } catch (e) {
+          logger.error('[VisualReasoning] tandem主模型调用失败:', e)
+        }
       }
 
       if (cpuInferenceEngine.model) {

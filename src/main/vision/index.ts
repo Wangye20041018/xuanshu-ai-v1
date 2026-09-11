@@ -1,7 +1,8 @@
 import {app, desktopCapturer} from 'electron'
 import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readdirSync } from 'fs'
 import { createHash } from 'crypto'
+import { spawn, ChildProcess } from 'child_process'
 import { pythonRuntime } from '../runtime/python'
 import { modelManager } from '../model-manager'
 import { logger } from '../../shared/logger'
@@ -57,6 +58,17 @@ interface CacheEntry {
 /** 缓存最大条目数 */
 const MAX_CACHE_SIZE = 10
 
+/**
+ * 纯内存 CPU 视觉后端（Qwen2-VL-2B）：
+ * - SGLang(30000) 不可用时自动拉起本地 llama-server，Qwen2-VL-2B 走纯 CPU（-ngl 0）内存推理，
+ *   适配 6GB 显存机器闭环图片识别（上下文/图片 token 全由系统内存承载）。
+ * - 端口固定 30001，避免与 tandem 本地文本引擎 8082 冲突。
+ */
+const LOCAL_VL_PORT = 30001
+const LOCAL_VL_MODEL_ID = 'qwen2-vl-2b'
+const LOCAL_VL_MODEL_FILE = 'Qwen2-VL-2B-Instruct-Q4_K_M.gguf'
+const LOCAL_VL_MMPROJ_FILE = 'mmproj-Qwen2-VL-2B-Instruct-f16.gguf'
+
 /** JPEG 压缩质量（0-100），70% 大幅减少传输量同时保持可读性 */
 const JPEG_QUALITY = 70
 
@@ -80,6 +92,13 @@ class VisionModel {
   private cacheOrder: string[] = []  // LRU 顺序追踪
   private sglangBaseUrl: string = 'http://127.0.0.1:30000'
   private captureResolution: { width: number; height: number } = { width: 1280, height: 720 }
+  // ---- 纯内存 CPU 视觉后端（Qwen2-VL-2B）状态 ----
+  private cpuFallbackEnabled: boolean = true
+  private localVLProcess: ChildProcess | null = null
+  private localVLBaseUrl: string = `http://127.0.0.1:${LOCAL_VL_PORT}`
+  private localVLReady: boolean = false
+  private localVLAvailable: boolean = false
+  private localVLLock: Promise<boolean> | null = null
 
   constructor() {
     // 延迟初始化，等待 app ready
@@ -120,6 +139,250 @@ class VisionModel {
    */
   getResolution(): { width: number; height: number } {
     return { ...this.captureResolution }
+  }
+
+  // ==================== 纯内存 CPU 视觉后端（Qwen2-VL-2B） ====================
+
+  /**
+   * 开关：SGLang 不可用时回退本地纯内存 CPU 视觉推理
+   * @param enabled - 是否启用 CPU 兜底
+   */
+  setCpuFallbackEnabled(enabled: boolean): void {
+    this.cpuFallbackEnabled = enabled
+    logger.info(`[vision cpu-fallback] CPU 视觉兜底 ${enabled ? '启用' : '关闭'}`)
+  }
+
+  /**
+   * 当前 CPU 兜底状态（状态上报用）
+   */
+  getCpuFallbackStatus(): { enabled: boolean; available: boolean; ready: boolean } {
+    return {
+      enabled: this.cpuFallbackEnabled,
+      available: this.localVLAvailable,
+      ready: this.localVLReady,
+    }
+  }
+
+  /**
+   * 在指定目录顶层查找包含关键词的文件
+   */
+  private findFileInDir(dir: string, keywords: string[]): string | null {
+    try {
+      if (!existsSync(dir)) return null
+      const files = readdirSync(dir, { withFileTypes: true })
+      for (const f of files) {
+        if (!f.isFile()) continue
+        if (keywords.every(k => f.name.includes(k))) {
+          return join(dir, f.name)
+        }
+      }
+    } catch { /* ignore */ }
+    return null
+  }
+
+  /**
+   * 解析 Qwen2-VL-2B 纯内存 CPU 后端的模型 + mmproj 文件路径。
+   * 路径来源（按优先级）：①model-registry 注册的 qwen2-vl-2b 模型路径 →
+   * ②userData/models 及子目录 → ③E:\模型库。mmproj 优先取模型同目录，其次 E:\模型库。
+   */
+  private resolveLocalVLPaths(): { model: string; mmproj: string } | null {
+    try {
+      // ① 注册表中的 qwen2-vl-2b 路径
+      let model: string | null = null
+      const userDataModels = join(app.getPath('userData'), 'models')
+      const candidates: string[] = []
+      try {
+        readdirSync(userDataModels, { withFileTypes: true }).forEach(ent => {
+          if (ent.isDirectory()) candidates.push(join(userDataModels, ent.name))
+        })
+      } catch { /* ignore */ }
+      candidates.unshift(userDataModels)
+      for (const dir of candidates) {
+        const hit = this.findFileInDir(dir, ['Qwen2-VL-2B', '.gguf'])
+        if (hit) { model = hit; break }
+      }
+
+      // userData 未命中时尝试 E:\模型库
+      if (!model) {
+        model = this.findFileInDir('E:\\模型库', ['Qwen2-VL-2B', '.gguf'])
+      }
+      if (!model) return null
+
+      // mmproj：模型同目录优先
+      const modelDir = model.substring(0, model.lastIndexOf('\\'))
+      let mmproj = this.findFileInDir(modelDir, ['mmproj', 'Qwen2-VL-2B', '.gguf'])
+      if (!mmproj) {
+        mmproj = this.findFileInDir('E:\\模型库', ['mmproj', 'Qwen2-VL-2B', '.gguf'])
+      }
+      if (!mmproj) return null
+
+      return { model, mmproj }
+    } catch (error) {
+      logger.error('[vision cpu-fallback] resolveLocalVLPaths error:', error)
+      return null
+    }
+  }
+
+  /**
+   * 探测 llama-server（与 tandem 本地引擎同源 discovery）
+   */
+  private resolveLlamaServerPath(): string | null {
+    const candidates = [
+      join(__dirname, '..', '..', '..', 'resources', 'llama-server.exe'),
+      join(process.cwd(), 'resources', 'llama-server.exe'),
+      join(app.getAppPath(), 'resources', 'llama-server.exe'),
+    ]
+    for (const c of candidates) {
+      if (existsSync(c)) return c
+    }
+    return null
+  }
+
+  /**
+   * 确保本地纯内存 CPU 视觉后端已拉起（单飞：并发只拉起一次）。
+   * Qwen2-VL-2B 以 -ngl 0 纯 CPU + KV 走系统内存（--no-kv-offload）在 6GB 机器闭环图片推理。
+   */
+  private async ensureLocalVL(): Promise<boolean> {
+    if (this.localVLReady) return true
+    // 已确认不可用（文件缺失/启动失败且进程已退出）则直接返回
+    if (this.localVLProcess === null && !this.localVLAvailable && this.localVLLock === null) {
+      const paths = this.resolveLocalVLPaths()
+      if (!paths) {
+        this.localVLAvailable = false
+        logger.warn('[vision cpu-fallback] 未找到 Qwen2-VL-2B GGUF/mmproj，纯内存视觉兜底不可用')
+        return false
+      }
+      this.localVLAvailable = true
+      this.localVLLock = this.spawnLocalVL(paths)
+    } else if (this.localVLProcess === null && this.localVLLock) {
+      // 等待已有拉起流程
+    }
+
+    if (this.localVLLock) {
+      return await this.localVLLock
+    }
+    return this.localVLReady
+  }
+
+  /**
+   * 拉起本地 llama-server（Qwen2-VL-2B，纯 CPU 内存推理），并等待就绪。
+   */
+  private async spawnLocalVL(paths: { model: string; mmproj: string }): Promise<boolean> {
+    try {
+      const serverPath = this.resolveLlamaServerPath()
+      if (!serverPath) {
+        logger.warn('[vision cpu-fallback] 未找到 resources/llama-server.exe，纯内存视觉兜底不可用')
+        this.localVLAvailable = false
+        return false
+      }
+
+      const args = [
+        '-m', paths.model,
+        '--mmproj', paths.mmproj,
+        '--host', '127.0.0.1',
+        '--port', String(LOCAL_VL_PORT),
+        '-ngl', '0',                    // 纯 CPU：-ngl 0 权重全在系统内存，不占用显存
+        '-c', '16384',                  // 2B 截图推理缺省 16K（KV 走 RAM，安全）
+        '--parallel', '1',
+        '--jinja',
+        '--no-kv-offload',              // KV cache 放系统内存（纯 CPU 同理，避免 OOM）
+        '-fa',                          // flash attention
+      ]
+
+      logger.info(`[vision cpu-fallback] 拉起本地 VL 后端: ${serverPath} --port ${LOCAL_VL_PORT} -ngl 0`)
+      const child = spawn(serverPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      this.localVLProcess = child
+
+      let stderrBuf = ''
+      child.stdout?.on('data', d => { stderrBuf = `${stderrBuf}${d}`.slice(-4000) })
+      child.stderr?.on('data', d => { stderrBuf = `${stderrBuf}${d}`.slice(-4000) })
+      child.on('error', err => {
+        logger.error(`[vision cpu-fallback] llama-server 启动失败: ${err.message}`)
+        this.localVLAvailable = false
+        this.localVLReady = false
+        this.localVLProcess = null
+      })
+      child.on('exit', code => {
+        logger.warn(`[vision cpu-fallback] 本地 VL 后端退出 code=${code}，残留日志: ${stderrBuf.slice(-500)}`)
+        this.localVLReady = false
+        this.localVLProcess = null
+      })
+
+      // 等待健康检查就绪（最多 120s，2B 纯 CPU 首次加载较慢）
+      const deadline = Date.now() + 120_000
+      while (Date.now() < deadline) {
+        if (!this.localVLProcess) return false
+        try {
+          const resp = await fetch(`${this.localVLBaseUrl}/health`, { signal: AbortSignal.timeout(2000) })
+          if (resp.ok) {
+            const body = await resp.json().catch(() => ({}))
+            if ((body as any).status !== 'loading error') {
+              this.localVLReady = true
+              logger.info('[vision cpu-fallback] Qwen2-VL-2B 纯内存 CPU 后端就绪 (30001)')
+              return true
+            }
+          }
+        } catch { /* 未就绪，继续轮询 */ }
+        await new Promise(r => setTimeout(r, 1500))
+      }
+      logger.warn('[vision cpu-fallback] 等待本地 VL 后端就绪超时')
+      return false
+    } catch (error) {
+      logger.error(`[vision cpu-fallback] spawnLocalVL error: ${error}`)
+      this.localVLAvailable = false
+      this.localVLProcess = null
+      return false
+    }
+  }
+
+  /**
+   * 在本地纯内存 CPU 后端补齐一条流式差异：首次触发时若进程已被外部 kill 会重建。
+   * 实际单次推理调用：SGLang 空 → 本兜底。
+   */
+  private async callLocalVL(messages: SGLangMessage[], timeout: number): Promise<SGLangResponse | null> {
+    try {
+      const ok = await this.ensureLocalVL()
+      if (!ok || !this.localVLReady) {
+        return null
+      }
+      const url = `${this.localVLBaseUrl}/v1/chat/completions`
+      const body = {
+        model: LOCAL_VL_MODEL_ID,
+        messages,
+        max_tokens: 1024,
+        temperature: 0.1,
+      }
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeout)
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        logger.error(`[vision cpu-fallback] 本地 VL API error: ${response.status} ${errorText}`)
+        return null
+      }
+      return await response.json() as SGLangResponse
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        logger.error(`[vision cpu-fallback] 本地 VL 调用超时(${timeout}ms)`)
+      } else {
+        logger.error(`[vision cpu-fallback] 本地 VL 调用失败: ${error}`)
+      }
+      return null
+    }
+  }
+
+  /**
+   * SGLang 不可用时按开关回退本地纯内存 CPU 后端
+   */
+  private async maybeLocalVLCall(messages: SGLangMessage[], timeout: number): Promise<SGLangResponse | null> {
+    if (!this.cpuFallbackEnabled) return null
+    return await this.callLocalVL(messages, timeout)
   }
 
   // ==================== 截图 ====================
@@ -334,10 +597,16 @@ class VisionModel {
         }
       ]
 
-      const response = await this.callSGLangAPI(messages, TIMEOUTS.ANALYZE)
+      let response = await this.callSGLangAPI(messages, TIMEOUTS.ANALYZE)
+
+      // SGLang 不可用时回退本地纯内存 CPU 后端（Qwen2-VL-2B，-ngl 0，KV/内存）
+      if (!response) {
+        logger.warn('[vision cpu-fallback] SGLang 不可用，切 Qwen2-VL-2B 纯内存 CPU 后端')
+        response = await this.maybeLocalVLCall(messages, TIMEOUTS.ANALYZE + 30_000)
+      }
 
       if (!response) {
-        const fallbackResult: VisionAnalysisResult = { success: false, error: 'SGLang API returned empty response' }
+        const fallbackResult: VisionAnalysisResult = { success: false, error: `视觉推理不可用（SGLang 不可用且纯内存 CPU 兜底未就绪/未找到 Qwen2-VL-2B）` }
         return fallbackResult
       }
 
@@ -470,13 +739,22 @@ class VisionModel {
         }
       ]
 
-      const response = await this.callSGLangAPI(messages, TIMEOUTS.BATCH)
+      let response = await this.callSGLangAPI(messages, TIMEOUTS.BATCH)
 
       if (!response) {
-        // 批量失败时，为每个未命中的图片返回错误
+        logger.warn('[vision cpu-fallback] SGLang 批量不可用，逐张走本地纯内存 CPU 后端')
+        // 批量失败时：逐张回退 analyzeImage（内部含纯内存 CPU 兜底）
         for (let i = 0; i < cacheMissIndices.length; i++) {
           const idx = cacheMissIndices[i]
-          results[idx] = { success: false, error: 'Batch API returned empty response' }
+          const single = await this.analyzeImage(cacheMissImages[i], cacheMissPrompts[i])
+          results[idx] = single
+          if (single.success) {
+            const cacheKey = this.buildCacheKey(
+              this.extractBase64(cacheMissImages[i]),
+              cacheMissPrompts[i]
+            )
+            this.addToCache(cacheKey, single)
+          }
         }
         return results
       }
@@ -582,7 +860,13 @@ class VisionModel {
         }
       ]
 
-      const response = await this.callSGLangAPI(messages, TIMEOUTS.LOCATE)
+      let response = await this.callSGLangAPI(messages, TIMEOUTS.LOCATE)
+
+      // SGLang 不可用时回退本地纯内存 CPU 后端
+      if (!response) {
+        logger.warn('[vision cpu-fallback] SGLang 不可用，locateElement 切 Qwen2-VL-2B 纯内存 CPU 后端')
+        response = await this.maybeLocalVLCall(messages, TIMEOUTS.LOCATE + 30_000)
+      }
 
       if (!response) {
         return { x: -1, y: -1, confidence: 0, error: 'SGLang API returned empty response' }
@@ -640,7 +924,13 @@ class VisionModel {
         }
       ]
 
-      const response = await this.callSGLangAPI(messages, TIMEOUTS.OCR)
+      let response = await this.callSGLangAPI(messages, TIMEOUTS.OCR)
+
+      // SGLang 不可用时回退本地纯内存 CPU 后端
+      if (!response) {
+        logger.warn('[vision cpu-fallback] SGLang 不可用，readTextFromScreen 切 Qwen2-VL-2B 纯内存 CPU 后端')
+        response = await this.maybeLocalVLCall(messages, TIMEOUTS.OCR + 30_000)
+      }
 
       if (!response) {
         return 'OCR failed: SGLang API returned empty response'
@@ -929,9 +1219,20 @@ export function setupVisionHandlers(): void {
 
   ipcMain.handle('vision:status', () => {
     try {
-      return { loaded: visionModel.isLoaded() }
+      return { loaded: visionModel.isLoaded(), cpuFallback: visionModel.getCpuFallbackStatus() }
     } catch (error) {
       return { loaded: false, error: String(error) }
+    }
+  })
+
+  /**
+   * 纯内存 CPU 视觉后端状态（配置用了 enableStandbyModels / visionCpuFallback）
+   */
+  ipcMain.handle('vision:cpu-fallback-status', () => {
+    try {
+      return { success: true, ...visionModel.getCpuFallbackStatus() }
+    } catch (error) {
+      return { success: false, error: String(error) }
     }
   })
 

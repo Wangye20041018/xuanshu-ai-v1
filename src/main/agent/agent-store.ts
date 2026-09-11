@@ -72,6 +72,10 @@ export function buildDefaultDefinition(partial: Partial<AgentDefinition>): Agent
     tags: Array.isArray(partial.tags) ? partial.tags : [],
     createdAt: partial.createdAt ?? now,
     updatedAt: now,
+    role: partial.role,
+    skills: Array.isArray(partial.skills) ? partial.skills : undefined,
+    collaboration: partial.collaboration,
+    preset: partial.preset,
   }
 }
 

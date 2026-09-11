@@ -18,7 +18,7 @@ interface MemoryItem {
 
   content: string
 
-  type: 'conversation' | 'preference' | 'fact'
+  type: 'conversation' | 'preference' | 'fact' | 'experience'
 
   timestamp: number
 
@@ -100,11 +100,21 @@ const typeConfig: Record<string, { label: string; color: string; icon: React.Rea
 
   fact: {
 
-    label: '知识',
+    label: '知识片段',
 
     color: COLORS.warning,
 
     icon: <Lightbulb size={12} />,
+
+  },
+
+  experience: {
+
+    label: '经验',
+
+    color: COLORS.success,
+
+    icon: <Brain size={12} />,
 
   },
 
@@ -213,7 +223,7 @@ style={{ minHeight: 36, minWidth: 36, display: 'flex', alignItems: 'center', jus
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Database size={12} />
-            来源：{memory.type === 'conversation' ? '对话记录' : memory.type === 'preference' ? '偏好学习' : '知识提取'}
+            来源：{memory.type === 'conversation' ? '对话记录' : memory.type === 'preference' ? '偏好学习' : memory.type === 'experience' ? '经验学习' : '知识提取'}
           </span>
         </div>
 
@@ -391,7 +401,7 @@ function Memory() {
 
   const [searchQuery, setSearchQuery] = useState('')
 
-  const [filterType, setFilterType] = useState<'all' | 'conversation' | 'preference' | 'fact'>('all')
+  const [filterType, setFilterType] = useState<'all' | 'conversation' | 'preference' | 'fact' | 'experience'>('all')
 
   const [isSearching, setIsSearching] = useState(false)
 
@@ -851,6 +861,8 @@ style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width:
             <option value="preference">偏好记忆</option>
 
             <option value="fact">知识记忆</option>
+
+            <option value="experience">经验记忆</option>
 
           </select>
 

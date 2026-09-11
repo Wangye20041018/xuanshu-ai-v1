@@ -14,13 +14,16 @@ import { spawn } from 'node:child_process'
 
 const command = process.argv[2] || 'dev'
 
+// 支持透传 electron 参数：`npm run dev -- -- --remote-debugging-port=9222`
+const passthrough = process.argv.slice(3)
+
 let bin = ''
 let binArgs = []
 
 switch (command) {
   case 'dev':
     bin = 'electron-vite'
-    binArgs = ['dev']
+    binArgs = ['dev', ...passthrough]
     break
   case 'build':
     bin = 'electron-vite'

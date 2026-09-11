@@ -1,4 +1,4 @@
-﻿/**
+﻿﻿/**
  * Dynamic Operation Engine
  * Provides IPC handlers for executing system operations including
  * command execution, file operations, window control, and system info queries.
@@ -1678,7 +1678,6 @@ except Exception as e:
 `,
       'system_lock': `
 import subprocess
-import { logger } from '../../shared/logger'
 subprocess.run(['rundll32.exe', 'user32.dll,LockWorkStation'], shell=True)
 print("System locked")
 `,

@@ -108,20 +108,25 @@ export class Logger {
 
     const formatted = this.format(level, message)
 
-    // 控制台输出
-    switch (level) {
-      case 'error':
-        console.error(formatted)
-        break
-      case 'warn':
-        console.warn(formatted)
-        break
-      case 'info':
-        console.log(formatted)
-        break
-      case 'debug':
-        console.debug(formatted)
-        break
+    // 控制台输出（stdout/stderr 管道被关闭时 console.* 可能抛 EPIPE，
+    // 必须静默降级，否则在 CrashGuard 内二次抛错会触发无限递归）
+    try {
+      switch (level) {
+        case 'error':
+          console.error(formatted)
+          break
+        case 'warn':
+          console.warn(formatted)
+          break
+        case 'info':
+          console.log(formatted)
+          break
+        case 'debug':
+          console.debug(formatted)
+          break
+      }
+    } catch {
+      // 控制台写入失败（如断管）不影响业务 — 静默丢弃
     }
 
     // 文件落盘

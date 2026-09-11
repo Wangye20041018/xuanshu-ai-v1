@@ -7,6 +7,8 @@ import { createHash } from 'crypto'
 import { createProxyAgent, getSystemProxy, testProxy, clearProxyCache } from '../utils/proxy-resolver'
 import { POWERSHELL_EXE } from '../utils/powershell'
 import { logger } from '../../shared/logger'
+import { analyzeModelFile } from '../utils/model-analyzer'
+import { deviceOptimizer } from '../device'
 
 /* ============================================================
  * 下载管理器 v3 — 流式写入 / 直连优先 / 断点续传 / sha256流式校验
@@ -575,21 +577,6 @@ const DEFAULT_MODELS: {
   gpuLayers?: number
 }[] = [
   {
-    id: 'qwen2-vl-7b',
-    name: 'Qwen2-VL-7B-Instruct',
-    type: 'vision',
-    tier: 'fast',
-    description: '视觉模型 — 图像理解、屏幕分析（v10.2 默认常驻：快档+视觉档统一底座，方案X）',
-    recommended: true,
-    size: '4.5GB',
-    sizeBytes: 4.5 * 1024 * 1024 * 1024,
-    url: 'https://huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF/resolve/main/Qwen2-VL-7B-Instruct-Q3_K_M.gguf',
-    mirrors: [
-      'https://hf-mirror.com/bartowski/Qwen2-VL-7B-Instruct-GGUF/resolve/main/Qwen2-VL-7B-Instruct-Q3_K_M.gguf',
-    ],
-    ollamaName: 'qwen2-vl:7b'
-  },
-  {
     id: 'qwen2-vl-3b',
     name: 'Qwen2-VL-3B-Instruct',
     type: 'vision',
@@ -637,10 +624,10 @@ const DEFAULT_MODELS: {
   {
     id: 'qwen2-vl-2b',
     name: 'Qwen2-VL-2B',
-    type: 'main',
-    tier: 'quality',
-    description: '质量档多模态小模型 (2B) — 复杂推理/长文档/代码/数学，自带视觉塔。按需换入，任务结束释放回 VL-7B',
-    recommended: false,
+    type: 'vision',
+    tier: 'vision',
+    description: '视觉待命模型 (2B) — 屏幕理解兜底、图像理解，UIA+OCR 失败时兜底看画面',
+    recommended: true,
     size: '2.2GB',
     sizeBytes: 2.2 * 1024 * 1024 * 1024,
     gpuLayers: 99,
@@ -894,8 +881,6 @@ export function setupModelHandlers(): void {
   /* ---------- 模型文件分析 ---------- */
   ipcMain.handle('model:analyze-file', async (_event, filePath: string) => {
     try {
-      const { analyzeModelFile } = await import('../utils/model-analyzer')
-      const { deviceOptimizer } = await import('../device')
       const deviceInfo = deviceOptimizer?.getDeviceInfo?.() || null
       return analyzeModelFile(filePath, deviceInfo)
     } catch (error) {

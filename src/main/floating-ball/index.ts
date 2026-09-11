@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * 悬浮球 + 字幕浮层
  * 3D 粒子球体（Three.js）+ 语音识别字幕
  */
@@ -80,8 +80,18 @@ function createFloatingBall(): BrowserWindow {
   floatingWindow.setIgnoreMouseEvents(false)
   floatingWindow.setVisibleOnAllWorkspaces(true)
   registerWindow(floatingWindow.webContents)
+  // M-14 对齐修复：closed 事件触发时 webContents 已被销毁，
+  // 直接访问 floatingWindow.webContents 会抛 "Object has been destroyed"
+  // 未捕获异常导致主进程崩溃（crash.log 中多次出现该堆栈模式）。
+  // 与主窗口 window.register 保持一致：先判存活 + try/catch 兜底。
   floatingWindow.on('closed', () => {
-    if (floatingWindow) unregisterWindow(floatingWindow.webContents)
+    try {
+      if (floatingWindow && !floatingWindow.isDestroyed() && !floatingWindow.webContents.isDestroyed()) {
+        unregisterWindow(floatingWindow.webContents)
+      }
+    } catch (e) {
+      logger.error(`[FloatingBall] closed 注销窗口失败: ${e}`)
+    }
   })
 
   // 加载独立 HTML 文件（从 resources 目录），替代内联 HTML 便于维护
@@ -108,21 +118,6 @@ function createFloatingBall(): BrowserWindow {
     </svg>
     <script>
       let clickTimer = null
-      let isTandem = false
-
-      // 监听联动模式切换
-      window.api.on('floating-ball:set-tandem', (active) => {
-        isTandem = active
-        if (active) {
-          document.body.style.background = 'rgba(99,102,241,0.25)'
-          document.body.style.borderColor = 'rgba(99,102,241,0.7)'
-          document.body.style.boxShadow = '0 0 20px rgba(99,102,241,0.3)'
-        } else {
-          document.body.style.background = 'rgba(13,17,23,0.85)'
-          document.body.style.borderColor = 'rgba(37,99,235,0.5)'
-          document.body.style.boxShadow = 'none'
-        }
-      })
 
       document.body.addEventListener('click', (e) => {
         if (clickTimer) {
@@ -349,7 +344,6 @@ export function setupFloatingBallHandlers(): void {
       switch (action) {
       case 'screenshot-question': {
         // 截图后发送到视觉模型分析
-        const { screenObserver } = await import('../visual-agent')
         const shot = await screenObserver.captureFullScreen()
         if (shot) {
           const wins = BrowserWindow.getAllWindows()
@@ -382,7 +376,6 @@ export function setupFloatingBallHandlers(): void {
         return true
       }
       case 'ocr': {
-        const { screenObserver } = await import('../visual-agent')
         const shot = await screenObserver.captureFullScreen()
         if (shot) {
           const wins = BrowserWindow.getAllWindows()
@@ -448,43 +441,13 @@ export function setupFloatingBallHandlers(): void {
   ipcMain.handle('floating-ball:unhide', () => {
     try { unsnap(); return { snapped: false } } catch (e) { return { snapped: false } }
   })
-
-  // ---- 语音指令回传（悬浮球 → voice-engine） ----
-  ipcMain.handle('floating-ball:voice-command', async (_event, command: string) => {
-    try {
-      // 将指令转发给 voice-engine 处理
-      const wins = BrowserWindow.getAllWindows()
-      const mainWin = wins.find((w: any) => !w.isDestroyed() && w.getTitle().includes('玄枢'))
-      if (mainWin) {
-        mainWin.webContents.send('voice:handle-command', command)
-      }
-      return { success: true, forwarded: !!mainWin }
-    } catch (e) {
-      logger.error('[FloatingBall] 语音指令转发失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  // 联动模式：切换悬浮球状态
-  ipcMain.handle('floating-ball:tandem-mode', (_e, active: boolean) => {
-    try {
-      if (floatingWindow && !floatingWindow.isDestroyed()) {
-        floatingWindow.webContents.send('floating-ball:set-tandem', active)
-      }
-      return true
-    } catch (e) { return false }
-  })
 }
 
 export { createFloatingBall }
 
-/**
- * 驱动悬浮球情绪色（融合情绪引擎：识别用户情绪后给粒子球上色）
- */
-export function setFloatingBallEmotion(color: string | null): void {
-  if (floatingWindow && !floatingWindow.isDestroyed() && !floatingWindow.webContents.isDestroyed()) {
-    try { floatingWindow.webContents.send('floating-ball:set-emotion', color) } catch { /* 非关键 */ }
-  }
+/** 获取悬浮球窗口实例（供语音面板模块做状态联动） */
+export function getFloatingWindow(): BrowserWindow | null {
+  return floatingWindow && !floatingWindow.isDestroyed() ? floatingWindow : null
 }
 
 /**
@@ -496,3 +459,4 @@ export function setFloatingBallState(state: 'idle' | 'listening' | 'speaking' | 
   }
 }
 import { logger } from '../../shared/logger'
+import { screenObserver } from '../visual-agent'

@@ -1,4 +1,4 @@
-/**
+﻿﻿/**
  * task-router 路由中枢（v12.0，单模型常驻 + 上下文压缩）
  *
  * 职责（轻量常驻、零显存）：
@@ -15,6 +15,7 @@ import { contextManager } from '../context-manager'
 import { Tier, TierResult, RouteSignal, IntentClass, GpuState } from './signals'
 import { classifyIntent } from './rules'
 import { logger } from '../../shared/logger'
+import { tandemManager } from '../tandem-manager'
 
 class TaskRouter {
   /** 最近一次路由结果（供 IPC 查询） */
@@ -113,7 +114,9 @@ class TaskRouter {
       // 注意：tandem 加载的主模型由 tandem 引擎管理，modelManager 的
       // gpuModelType 不会感知，因此必须在此显式探测。
       try {
-        const { tandemManager } = require('../tandem-manager')
+        // M-20 修复：require('../tandem-manager') 在生产构建(out)下找不到模块
+        // （electron-vite 会将 tandem-manager 打进主 bundle，CommonJS require 运行时解析失败），
+        // 与其他模块统一改用 await import 动态加载，构建期会被正确转译为 bundle 引用。
         const states = tandemManager.getServerStates()
         const running = states.find((s: any) => s.status === 'running' && s.port)
         if (running) {

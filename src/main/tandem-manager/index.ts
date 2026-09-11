@@ -1,19 +1,24 @@
-/**
- * TandemManager — 多模型联动引擎 v1.0
+﻿﻿/**
+ * LocalInferenceEngine — 本地模型推理引擎（原 TandemManager，已去「联动」概念）
  *
- * 核心能力：
- * - 管理多个 llama-server 实例（独立端口）
- * - 四种联动模式：双答案 / 搭档 / 师徒 / 辩论
+ * 职责（单一本地推理引擎，不再承担多模型联动）：
+ * - 管理 llama-server 实例（spawn / 健康探测 / 守护重启 / 停止）
+ * - 提供 queryModel 本地推理（HTTP /v1/completions）
  * - 6GB VRAM 感知：GPU 常驻一个模型，其余 CPU 运行
- * - 与 ModelManager 协作，复用已有 llama-server 路径
+ * - 与 ModelManager / ModelRegistry / Scheduler 协作，复用 llama-server 路径
+ *
+ * 注：历史上此模块承担「超算/双模型联动（dual/partner/mentor/debate）」，按产品拍板
+ * 方案 A 已删除全部联动模式，仅保留本地推理引擎能力，作为模型加载/卸载重构的载体。
  */
 
 import { ChildProcess, spawn } from 'child_process'
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { logger } from '../../shared/logger'
 import { sendToAllWindows } from '../utils/broadcast'
+import { modelManager } from '../model-manager'
+import { getHardware, resolveModelRuntime } from '../runtime/hardware'
 
 /* ============================================================
  * 类型定义
@@ -35,6 +40,8 @@ export interface TandemModelConfig {
   /** 推理参数 */
   temperature: number
   maxTokens: number
+  /** v13.x 多模态主模型：mmproj 视觉头路径（llama-server --mmproj，视觉推理直接走主模型） */
+  mmprojPath?: string
 }
 
 export interface TandemHardwareLimit {
@@ -42,12 +49,9 @@ export interface TandemHardwareLimit {
   maxThreads: number
 }
 
-export type TandemMode = 'dual' | 'partner' | 'mentor' | 'debate'
-
 export interface TandemConfig {
   models: TandemModelConfig[]
   hardwareLimit: TandemHardwareLimit
-  defaultMode: TandemMode
 }
 
 export interface TandemServerState {
@@ -59,18 +63,15 @@ export interface TandemServerState {
   errorMessage?: string
   /** 运行中意外退出后的自动重启次数（P1 稳定性） */
   restartCount?: number
-}
-
-interface DualAnswer {
-  modelId: string
-  modelName: string
-  content: string
-  elapsedMs: number
-  tokensPerSec: number
+  /** 实际启动模式/GPU 层数：与 llama-server 真实启动参数一致（前端展示 GPU/CPU 以此为准） */
+  mode?: 'gpu' | 'cpu'
+  gpuLayers?: number
+  /** M-1 修复：MTP 状态（enabled=启动带 --spec-type draft-mtp；degraded=降级为非 MTP） */
+  mtp?: { enabled: boolean; degraded: boolean }
 }
 
 /* ============================================================
- * TandemManager 实现
+ * LocalInferenceEngine 实现（原 TandemManager）
  * ============================================================ */
 
 class TandemManager {
@@ -78,6 +79,37 @@ class TandemManager {
   private config: TandemConfig | null = null
   private llamaServerPath: string = ''
   private basePort = 8080
+  /** MTP 自动识别开关（可回退）：true 时对「架构支持 MTP + 型号含 MTP」的模型自动启用 MTP 参数 */
+  private mtpAutoEnabled = true
+
+  /** 配置 MTP 自动识别开关（可回退开关，不影响手动模式下对模型的逐模型控制） */
+  setMtpAutoEnabled(enabled: boolean): void {
+    this.mtpAutoEnabled = enabled !== false
+    logger.info(`[TandemManager] MTP 自动识别开关: ${this.mtpAutoEnabled ? 'ON' : 'OFF'}`)
+  }
+
+  isMtpAutoEnabled(): boolean {
+    return this.mtpAutoEnabled
+  }
+
+  /**
+   * MTP 模型识别：架构支持 MTP（Qwen3.5-9B / qwen35 底座）且型号带 MTP 后缀。
+   * 当前内置两位 MTP 模型（均由 Qwen3.5-9B 底座改造）：
+   *   - Qwopus3.5-9B-Coder-MTP      （name 含 "opus3.5-9b"）
+   *   - DeepSeek-V4-Pro-Qwen3.5-9B-MTP（name 含 "qwen3.5-9b"）
+   * 判定用 name/id/modelPath 任一命中即视为 MTP 模型：要求 ①型号含 "mtp" 后缀
+   * 且 ②底座命中 qwen3.5/qwen35/opus3.5-9b/3.5-9b 之一（覆盖两位模型命名变体，避免漏识别）。
+   */
+  private isMtpModel(model: TandemModelConfig): boolean {
+    const hay = `${model.name || ''} ${model.id || ''} ${model.modelPath || ''}`.toLowerCase()
+    const qwen35Base =
+      hay.includes('qwen3.5') ||
+      hay.includes('qwen35') ||
+      hay.includes('opus3.5-9b') ||
+      hay.includes('3.5-9b')
+    const hasMtp = hay.includes('mtp')
+    return qwen35Base && hasMtp
+  }
 
   /** 初始化：探测 llama-server 路径 */
   async initialize(): Promise<void> {
@@ -99,17 +131,36 @@ class TandemManager {
     logger.warn('[TandemManager] llama-server.exe 未找到，将使用 API 模式')
   }
 
-  /** 加载联动配置 */
+  /** 加载推理引擎配置 */
   loadConfig(config: TandemConfig): void {
     this.config = config
     // 更新端口基准，避免冲突
     const maxPort = Math.max(...config.models.map(m => m.port), this.basePort - 1)
     this.basePort = maxPort + 1
-    logger.info(`[TandemManager] 配置已加载: ${config.models.length} 个模型, 默认模式=${config.defaultMode}`)
+    logger.info(`[TandemManager] 配置已加载: ${config.models.length} 个模型`)
   }
 
   getConfig(): TandemConfig | null {
     return this.config
+  }
+
+  /** 采纳外部已运行端口（如注册表常驻引擎），不重复 spawn */
+  adoptRunningServer(model: TandemModelConfig): boolean {
+    const existing = this.servers.get(model.id)
+    if (existing?.status === 'running') return true
+    const state: TandemServerState = {
+      modelId: model.id,
+      port: model.port,
+      status: 'running',
+      process: null,
+      startedAt: Date.now(),
+      mode: model.mode,
+      gpuLayers: model.gpuLayers,
+    }
+    this.servers.set(model.id, state)
+    this.notifyStatusChange()
+    logger.info(`[TandemManager] 已采纳常驻端口: ${model.name} 端口=${model.port}`)
+    return true
   }
 
   /** 启动单个模型的 llama-server */
@@ -137,6 +188,8 @@ class TandemManager {
       status: 'starting',
       process: null,
       startedAt: Date.now(),
+      mode: model.mode,
+      gpuLayers: model.gpuLayers,
     }
     this.servers.set(model.id, state)
 
@@ -161,136 +214,186 @@ class TandemManager {
     }
   }
 
-  /** 启动 llama-server 进程 */
+  /** 启动 llama-server 进程（M-1 修复：GPU 模式追加 MTP 参数并支持失败降级） */
   private startLlamaServer(model: TandemModelConfig, state: TandemServerState): Promise<void> {
     return new Promise((resolve, reject) => {
-      const args = [
-        '-m', model.modelPath,
-        '--port', String(model.port),
-        '--host', '127.0.0.1',
-        '-ngl', String(model.gpuLayers),
-        '-c', String(model.contextSize),
-        '--parallel', '1',
-        '--jinja',
-        '--metrics',
-      ]
-
-      logger.info(`[TandemManager] 启动: ${model.name} 端口=${model.port} ngl=${model.gpuLayers} ctx=${model.contextSize}`)
-
-      const proc = spawn(this.llamaServerPath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-
-      let resolved = false
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true
-          clearInterval(healthTimer)
-          try { proc.kill() } catch { /* ignore */ }
-          reject(new Error(`${model.name} 启动超时（180秒）`))
+      // M-1 接线：GPU 模式开启原生 MTP（多路预测）加速。
+      // RTX3060 6GB 显存紧张，n_max=3（llama.cpp 官方建议 GPU 2~3）；CPU 模式不开（验证开销抵消收益）。
+      const buildArgs = (useMtp: boolean): string[] => {
+        const args = [
+          '-m', model.modelPath,
+          '--port', String(model.port),
+          '--host', '127.0.0.1',
+          '-ngl', String(model.gpuLayers),
+          '-c', String(model.contextSize),
+          '--parallel', '1',
+          '--jinja',
+          '--metrics',
+        ]
+        // P0-4 上下文全开：GPU 模式把 KV cache 放到系统内存（--no-kv-offload）+ q8 量化，
+        // 显存只装权重 → 上下文长度不再被显存余量卡死，由系统内存承载（实测生成速度几乎不降）。
+        // 6G 卡显存余量归零也能撑起远超 4K 的大窗口。
+        if (model.mode === 'gpu' && model.gpuLayers > 0) {
+          args.push('--no-kv-offload', '-ctk', 'q8_0', '-ctv', 'q8_0', '-fa')
         }
-      }, 180000)
-
-      // health 轮询：llama-server 新版输出格式不一（listening on http），直接探测端口最可靠
-      const checkHealth = (): void => {
-        if (resolved) return
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const http = require('http')
-          const req = http.get(`http://127.0.0.1:${model.port}/health`, { timeout: 2000 }, (res: any) => {
-            if (res.statusCode === 200 && !resolved) {
-              resolved = true
-              clearTimeout(timeout)
-              clearInterval(healthTimer)
-              state.process = proc
-              state.status = 'running'
-              resolve()
-            }
-            if (res.resume) res.resume()
-          })
-          req.on('error', () => { /* 服务未就绪，继续等待 */ })
-        } catch { /* ignore */ }
+        // v13.x 多模态主模型：挂载 mmproj 视觉头（Qwopus 发图直接走主模型，无需换载 2B）
+        if (model.mmprojPath && existsSync(model.mmprojPath)) {
+          args.push('--mmproj', model.mmprojPath)
+        }
+        if (useMtp && model.mode === 'gpu') {
+          args.push('--spec-type', 'draft-mtp', '--spec-draft-n-max', '3', '--spec-draft-n-min', '1')
+        }
+        return args
       }
-      const healthTimer = setInterval(checkHealth, 1000)
 
-      proc.stdout?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        if (!resolved && (text.includes('HTTP server listening') || text.includes('starting the main loop') || text.includes('listening on http'))) {
-          resolved = true
+      // 单次尝试：useMtp=true 首次尝试，若启动失败（MTP 参数不被支持）则降级为非 MTP 重试
+      const attempt = (useMtp: boolean): void => {
+        const args = buildArgs(useMtp)
+        logger.info(`[TandemManager] 启动: ${model.name} 端口=${model.port} ngl=${model.gpuLayers} ctx=${model.contextSize} MTP=${useMtp ? 'on' : 'off'}`)
+        state.mtp = useMtp ? { enabled: true, degraded: false } : { enabled: false, degraded: true }
+
+        const proc = spawn(this.llamaServerPath, args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+
+        let resolved = false
+        let timedOut = false
+        let healthTimer: NodeJS.Timeout | null = null
+
+        const cleanup = (): void => {
+          if (healthTimer) clearInterval(healthTimer)
           clearTimeout(timeout)
-          clearInterval(healthTimer)
-          state.process = proc
-          state.status = 'running'
-          resolve()
         }
-      })
 
-      proc.stderr?.on('data', (data: Buffer) => {
-        // llama-server 的很多输出走 stderr，这是正常的
-        const text = data.toString()
-        if (!resolved && (text.includes('HTTP server listening') || text.includes('starting the main loop') || text.includes('listening on http'))) {
-          resolved = true
-          clearTimeout(timeout)
-          clearInterval(healthTimer)
-          state.process = proc
-          state.status = 'running'
-          resolve()
-        }
-        logger.debug(`[TandemManager:${model.name}] ${text.trim().substring(0, 200)}`)
-      })
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            resolved = true
+            timedOut = true
+            cleanup()
+            try { proc.kill() } catch { /* ignore */ }
+            reject(new Error(`${model.name} 启动超时（180秒）`))
+          }
+        }, 180000)
 
-      proc.on('error', (err) => {
-        if (!resolved) {
-          resolved = true
-          clearTimeout(timeout)
-          clearInterval(healthTimer)
-          reject(new Error(`启动 ${model.name} 失败: ${err.message}`))
-        }
-      })
-
-      proc.on('exit', (code) => {
-        if (!resolved) {
-          resolved = true
-          clearTimeout(timeout)
-          clearInterval(healthTimer)
-          reject(new Error(`${model.name} 异常退出，退出码=${code}`))
-        }
-        // 运行中意外退出 → 指数退避自动重启（P1 稳定性：模型引擎守护）
-        const wasRunning = state.status === 'running'
-        state.status = 'stopped'
-        state.process = null
-        this.servers.set(model.id, state)
-
-        if (wasRunning && code !== 0) {
-          const attempt = (state.restartCount ?? 0) + 1
-          if (attempt <= 3) {
-            state.restartCount = attempt
-            const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000)
-            logger.warn(`[TandemManager] ${model.name} 运行中退出(code=${code})，${delay}ms 后自动重启 (${attempt}/3)`)
-            this.notifyStatusChange()
-            setTimeout(() => {
-              if (state.status === 'stopped') {
-                state.status = 'starting'
-                this.startLlamaServer(model, state)
-                  .then(() => {
-                    logger.info(`[TandemManager] ${model.name} 自动重启成功 (端口 ${model.port})`)
-                  })
-                  .catch((e: Error) => {
-                    state.status = 'error'
-                    state.errorMessage = e.message
-                    logger.error(`[TandemManager] ${model.name} 自动重启失败: ${e.message}`)
-                  })
-                  .finally(() => { this.notifyStatusChange() })
+        // health 轮询：直接探测端口最可靠
+        const checkHealth = (): void => {
+          if (resolved) return
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const http = require('http')
+            const req = http.get(`http://127.0.0.1:${model.port}/health`, { timeout: 2000 }, (res: any) => {
+              if (res.statusCode === 200 && !resolved) {
+                resolved = true
+                cleanup()
+                state.process = proc
+                state.status = 'running'
+                resolve()
               }
-            }, delay)
+              if (res.resume) res.resume()
+            })
+            req.on('error', () => { /* 服务未就绪，继续等待 */ })
+          } catch { /* ignore */ }
+        }
+        healthTimer = setInterval(checkHealth, 1000)
+
+        const onServerReady = (text: string): void => {
+          if (!resolved && (text.includes('HTTP server listening') || text.includes('starting the main loop') || text.includes('listening on http'))) {
+            resolved = true
+            cleanup()
+            state.process = proc
+            state.status = 'running'
+            resolve()
+          }
+        }
+
+        proc.stdout?.on('data', (data: Buffer) => onServerReady(data.toString()))
+        proc.stderr?.on('data', (data: Buffer) => {
+          const text = data.toString()
+          onServerReady(text)
+          logger.debug(`[TandemManager:${model.name}] ${text.trim().substring(0, 200)}`)
+        })
+
+        proc.on('error', (err) => {
+          if (resolved) return
+          // M-1 降级：MTP 参数不被当前 llama-server 支持 → 非 MTP 重试一次
+          if (useMtp) {
+            resolved = true
+            cleanup()
+            logger.warn(`[TandemManager] ${model.name} MTP 启动失败(${err.message})，降级为非 MTP 重启`)
+            attempt(false)
             return
           }
-          logger.warn(`[TandemManager] ${model.name} 已达到最大重启次数(3)，停止自动重启`)
-        } else if (wasRunning) {
-          logger.warn(`[TandemManager] ${model.name} 正常退出，code=${code}`)
-        }
-        this.notifyStatusChange()
-      })
+          resolved = true
+          cleanup()
+          reject(new Error(`启动 ${model.name} 失败: ${err.message}`))
+        })
+
+        proc.on('exit', (code) => {
+          if (!resolved && !timedOut) {
+            // 启动阶段退出：若是 MTP 尝试，也降级重试（参数不被支持时可能直接退出）
+            if (useMtp) {
+              resolved = true
+              cleanup()
+              logger.warn(`[TandemManager] ${model.name} MTP 启动退出(code=${code})，降级为非 MTP 重启`)
+              attempt(false)
+              return
+            }
+            resolved = true
+            cleanup()
+            reject(new Error(`${model.name} 异常退出，退出码=${code}`))
+          }
+          // 运行中意外退出 → 指数退避自动重启（P1 稳定性：模型引擎守护）
+          const wasRunning = state.status === 'running'
+          state.status = 'stopped'
+          state.process = null
+          this.servers.set(model.id, state)
+
+          if (wasRunning && code !== 0) {
+            const attemptCount = (state.restartCount ?? 0) + 1
+            if (attemptCount <= 3) {
+              state.restartCount = attemptCount
+              const delay = Math.min(1000 * Math.pow(2, attemptCount - 1), 8000)
+              logger.warn(`[TandemManager] ${model.name} 运行中退出(code=${code})，${delay}ms 后自动重启 (${attemptCount}/3)`)
+              this.notifyStatusChange()
+              setTimeout(() => {
+                if (state.status === 'stopped') {
+                  state.status = 'starting'
+                  this.startLlamaServer(model, state)
+                    .then(() => {
+                      logger.info(`[TandemManager] ${model.name} 自动重启成功 (端口 ${model.port})`)
+                    })
+                    .catch((e: Error) => {
+                      state.status = 'error'
+                      state.errorMessage = e.message
+                      logger.error(`[TandemManager] ${model.name} 自动重启失败: ${e.message}`)
+                    })
+                    .finally(() => { this.notifyStatusChange() })
+                }
+              }, delay)
+              return
+            }
+            logger.warn(`[TandemManager] ${model.name} 已达到最大重启次数(3)，停止自动重启`)
+          } else if (wasRunning) {
+            logger.warn(`[TandemManager] ${model.name} 正常退出，code=${code}`)
+          }
+          this.notifyStatusChange()
+        })
+      }
+
+      // MTP 自动识别（M-1 升级）：仅当「开关开启 + GPU 模式 + 识别为 MTP 模型（qwen3.5/qwen35 底座且型号含 MTP）」
+      // 时才在首启带 MTP 参数；不满足条件的模型直接非 MTP 启动（不再对全量模型无脑开 MTP）。
+      // 可回退：开关由 tandem:set-mtp-auto / 配置键 mtpAutoEnable 控制，置 OFF 则任何模型都不启用 MTP。
+      const wantMtp =
+        this.mtpAutoEnabled &&
+        model.mode === 'gpu' &&
+        model.gpuLayers > 0 &&
+        this.isMtpModel(model)
+      logger.info(
+        `[TandemManager] ${model.name} MTP 自动识别: 开关=${this.mtpAutoEnabled} 识别为MTP=${this.isMtpModel(model)} 模式=${model.mode} → ${wantMtp ? '带MTP启动' : '非MTP启动'}`
+      )
+
+      // 首次以对应模式启动；MTP 首启失败/退出时 attempt(false) 自动降级
+      attempt(wantMtp)
     })
   }
 
@@ -373,207 +476,14 @@ class TandemManager {
     const data = await resp.json() as any
     const elapsed = Date.now() - start
     const content = data.choices?.[0]?.text || ''
-    const tk = content.length / 4
+    // F-2 修复：tok/s 取自服务端 usage.completion_tokens（真实计数），不再用 content.length/4 估算
+    const completionTokens = data.usage?.completion_tokens ?? data.usage?.total_tokens ?? 0
+    const tokensPerSec = completionTokens > 0 && elapsed > 0 ? Math.round((completionTokens / (elapsed / 1000)) * 10) / 10 : 0
     return {
       content,
       elapsedMs: elapsed,
-      tokensPerSec: Math.round(tk / (elapsed / 1000)),
+      tokensPerSec,
     }
-  }
-
-  /** 双答案模式 */
-  async dualAnswer(
-    prompt: string,
-    modelAId: string,
-    modelBId: string,
-  ): Promise<DualAnswer[]> {
-    // 并行查询两个模型
-    const [resultA, resultB] = await Promise.all([
-      this.queryModel(modelAId, prompt).catch(e => ({
-        content: `[错误] ${e.message}`,
-        elapsedMs: 0,
-        tokensPerSec: 0,
-      })),
-      this.queryModel(modelBId, prompt).catch(e => ({
-        content: `[错误] ${e.message}`,
-        elapsedMs: 0,
-        tokensPerSec: 0,
-      })),
-    ])
-
-    const cfgA = this.config?.models.find(m => m.id === modelAId)
-    const cfgB = this.config?.models.find(m => m.id === modelBId)
-
-    return [
-      { modelId: modelAId, modelName: cfgA?.name || modelAId, ...resultA },
-      { modelId: modelBId, modelName: cfgB?.name || modelBId, ...resultB },
-    ]
-  }
-
-  /** 搭档模式：按专长分工 */
-  async partnerAnswer(
-    prompt: string,
-    modelAId: string, // 代码/逻辑
-    modelBId: string, // 分析/文字
-    strategy: 'expertise' | 'content' | 'dimension' = 'expertise'
-  ): Promise<DualAnswer[]> {
-    let taskA = prompt
-    let taskB = prompt
-
-    switch (strategy) {
-      case 'expertise':
-        taskA = `[代码与逻辑分析任务] ${prompt}`
-        taskB = `[文字理解与分析任务] ${prompt}`
-        break
-      case 'content':
-        // 按内容拆分：前半段给 A，后半段给 B
-        const mid = Math.floor(prompt.length / 2)
-        taskA = `[前半部分] ${prompt.substring(0, mid)}`
-        taskB = `[后半部分] ${prompt.substring(mid)}`
-        break
-      case 'dimension':
-        taskA = `[中文视角] ${prompt}`
-        taskB = `[英文视角] ${prompt}`
-        break
-    }
-
-    const [resultA, resultB] = await Promise.all([
-      this.queryModel(modelAId, taskA).catch(e => ({
-        content: `[错误] ${e.message}`,
-        elapsedMs: 0,
-        tokensPerSec: 0,
-      })),
-      this.queryModel(modelBId, taskB).catch(e => ({
-        content: `[错误] ${e.message}`,
-        elapsedMs: 0,
-        tokensPerSec: 0,
-      })),
-    ])
-
-    const cfgA = this.config?.models.find(m => m.id === modelAId)
-    const cfgB = this.config?.models.find(m => m.id === modelBId)
-
-    return [
-      { modelId: modelAId, modelName: `${cfgA?.name || modelAId} (${strategy})`, ...resultA },
-      { modelId: modelBId, modelName: `${cfgB?.name || modelBId} (${strategy})`, ...resultB },
-    ]
-  }
-
-  /* ============================================================
-   * 师徒模式：小模型起草 → 大模型校验修正
-   * ============================================================ */
-  async mentorAnswer(
-    prompt: string,
-    mentorAId: string,   // 大模型（导师/校验方）
-    apprenticeBId: string, // 小模型（学徒/起草方）
-    // @ts-expect-error TS6133 - roundCount reserved for future use
-    roundCount: number = 1
-  ): Promise<{
-    draft: DualAnswer
-    verified: DualAnswer
-    finalContent: string
-  }> {
-    // 阶段1：学徒草稿
-    const draftTask = `请快速给出一个简洁的初始答案（后续会被导师校验修正）：\n${prompt}`
-    const draftResult = await this.queryModel(apprenticeBId, draftTask, { temperature: 0.8, maxTokens: 1024 })
-
-    // 阶段2：导师校验 + 修正
-    const verifyTask = `以下是一个初级模型对问题的回答草稿，请作为专家审阅者：\n1) 指出草稿中的错误或不足\n2) 给出修正后的完整最终答案\n\n【原始问题】\n${prompt}\n\n【草稿答案】\n${draftResult.content}\n\n请按以下格式输出：\n## 校验意见\n（指出错误/不足）\n\n## 最终答案\n（修正后的完整答案）`
-    const verifiedResult = await this.queryModel(mentorAId, verifyTask, { temperature: 0.5, maxTokens: 2048 })
-
-    const cfgA = this.config?.models.find(m => m.id === mentorAId)
-    const cfgB = this.config?.models.find(m => m.id === apprenticeBId)
-
-    return {
-      draft: {
-        modelId: apprenticeBId,
-        modelName: `${cfgB?.name || apprenticeBId} (草稿)`,
-        content: draftResult.content,
-        elapsedMs: draftResult.elapsedMs,
-        tokensPerSec: draftResult.tokensPerSec,
-      },
-      verified: {
-        modelId: mentorAId,
-        modelName: `${cfgA?.name || mentorAId} (导师)`,
-        content: verifiedResult.content,
-        elapsedMs: verifiedResult.elapsedMs,
-        tokensPerSec: verifiedResult.tokensPerSec,
-      },
-      finalContent: verifiedResult.content,
-    }
-  }
-
-  /* ============================================================
-   * 辩论模式：两模型交替辩论（TandemManager 双服务器版）
-   * ============================================================ */
-  async debateAnswer(
-    question: string,
-    modelAId: string,  // 正方
-    modelBId: string,  // 反方
-    rounds: number = 2
-  ): Promise<{
-    question: string
-    rounds: Array<{
-      index: number
-      sideA: { modelName: string; content: string; elapsedMs: number; tokensPerSec: number }
-      sideB: { modelName: string; content: string; elapsedMs: number; tokensPerSec: number }
-    }>
-    history: string[]
-  }> {
-    const cfgA = this.config?.models.find(m => m.id === modelAId)
-    const cfgB = this.config?.models.find(m => m.id === modelBId)
-    const nameA = cfgA?.name || modelAId
-    const nameB = cfgB?.name || modelBId
-
-    const result: any = {
-      question,
-      rounds: [],
-      history: [],
-    }
-
-    let contextA = `你正在参与一场辩论，你是正方辩手。\n辩题：${question}\n`
-    let contextB = `你正在参与一场辩论，你是反方辩手。\n辩题：${question}\n`
-
-    for (let i = 0; i < rounds; i++) {
-      // A 发言
-      const promptA = i === 0
-        ? `${contextA}请发表你的开篇立论，阐述你的核心观点和主要论据。`
-        : `${contextA}请针对反方刚才的观点进行反驳，并进一步强化你的论点。`
-      const resultA = await this.queryModel(modelAId, promptA, { temperature: 0.85, maxTokens: 1024 })
-
-      // B 发言
-      const opponentAContent = resultA.content
-      const promptB = i === 0
-        ? `${contextB}正方刚刚发表了以下观点：\n"${opponentAContent.substring(0, 500)}"\n\n请发表你的开篇立论，批驳正方观点并阐述你的立场。`
-        : `${contextB}正方反驳说：\n"${opponentAContent.substring(0, 500)}"\n\n请回击正方的反驳，维护你的立场。`
-      const resultB = await this.queryModel(modelBId, promptB, { temperature: 0.85, maxTokens: 1024 })
-
-      const roundData = {
-        index: i + 1,
-        sideA: {
-          modelName: nameA,
-          content: resultA.content,
-          elapsedMs: resultA.elapsedMs,
-          tokensPerSec: resultA.tokensPerSec,
-        },
-        sideB: {
-          modelName: nameB,
-          content: resultB.content,
-          elapsedMs: resultB.elapsedMs,
-          tokensPerSec: resultB.tokensPerSec,
-        },
-      }
-
-      result.rounds.push(roundData)
-      result.history.push(`[第${i + 1}轮] ${nameA}: ${resultA.content}`)
-      result.history.push(`[第${i + 1}轮] ${nameB}: ${resultB.content}`)
-
-      // 更新上下文
-      contextA += `\n反方在第${i + 1}轮说：${resultB.content.substring(0, 500)}\n`
-      contextB += `\n正方在第${i + 1}轮说：${resultA.content.substring(0, 500)}\n`
-    }
-
-    return result
   }
 
   /** 广播状态变更到所有渲染窗口 */
@@ -652,20 +562,26 @@ export function setupTandemHandlers(): void {
     try {
       if (!modelId) return { success: false, error: '缺少模型 ID' }
       const { modelRegistry } = await import('../model-registry')
-      const { modelManager } = await import('../model-manager')
 
       // 1. 构造目标模型配置：优先注册表（完整配置），回退 modelManager 扫描模型（资源目录 GGUF）
       const registered = modelRegistry.list().find((m: any) => m.id === modelId)
       let cfg: TandemModelConfig | null = null
       if (registered) {
+        // 运行位置直通：按 RegisteredModel.runLocation 经 resolveModelRuntime 计算最终
+        // gpuLayers/mode（显式指定不被显存自动缩放覆盖），再启动 llama-server
+        const hw = await getHardware()
+        const rt = resolveModelRuntime(
+          { ...registered, runLocation: registered.runLocation, contextSize: registered.contextSize },
+          hw,
+        )
         cfg = {
           id: registered.id,
           name: registered.name,
           port: 0, // 下面统一分配
           modelPath: registered.modelPath,
-          gpuLayers: registered.mode === 'cpu' ? 0 : (registered.gpuLayers || 0),
-          contextSize: registered.contextSize || 2048,
-          mode: registered.mode === 'cpu' ? 'cpu' : 'gpu',
+          gpuLayers: rt.gpuLayers,
+          contextSize: rt.contextSize || registered.contextSize || 2048,
+          mode: rt.targetDevice === 'gpu' ? 'gpu' : 'cpu',
           temperature: registered.temperature ?? 0.7,
           maxTokens: registered.maxTokens ?? 2048,
         }
@@ -726,80 +642,49 @@ export function setupTandemHandlers(): void {
     }
   })
 
+  /* ---------- MTP 自动识别开关（可回退） ---------- */
+  ipcMain.handle('tandem:set-mtp-auto', async (_e, enabled: boolean) => {
+    tandemManager.setMtpAutoEnabled(enabled !== false)
+    return { success: true, mtpAutoEnabled: tandemManager.isMtpAutoEnabled() }
+  })
+
+  /* ---------- 端口健康探测（用于复用常驻模型引擎，如注册表 isStartup 模型） ---------- */
+  ipcMain.handle('tandem:check-port', async (_e, port: number) => {
+    try {
+      const p = Number(port)
+      if (!Number.isInteger(p) || p <= 0 || p > 65535) return { healthy: false }
+      const healthy = await new Promise<boolean>((resolve) => {
+        const req = require('http').get(`http://127.0.0.1:${p}/health`, { timeout: 2000 }, (res: any) => {
+          const ok = res.statusCode === 200
+          if (res.resume) res.resume()
+          resolve(ok)
+        })
+        req.on('error', () => resolve(false))
+      })
+      return { healthy, port: p }
+    } catch (e: any) {
+      logger.error('[Tandem] check-port 失败:', e)
+      return { healthy: false }
+    }
+  })
+
+  /* ---------- 采纳常驻端口（注册表常驻引擎复用，不重复启动） ---------- */
+  ipcMain.handle('tandem:adopt-port', async (_e, model: TandemModelConfig) => {
+    try {
+      const ok = tandemManager.adoptRunningServer(model)
+      return { success: ok, port: model.port }
+    } catch (e: any) {
+      logger.error('[Tandem] adopt-port 失败:', e)
+      return { success: false, error: e.message }
+    }
+  })
+
   /* ---------- 推理 ---------- */
   ipcMain.handle('tandem:query', async (_e, modelId: string, prompt: string, options?: { temperature?: number; maxTokens?: number }) => {
     try {
       return await tandemManager.queryModel(modelId, prompt, options)
     } catch (e: any) {
       return { content: `[错误] ${e.message}`, elapsedMs: 0, tokensPerSec: 0 }
-    }
-  })
-
-  /* ---------- 双答案 ---------- */
-  ipcMain.handle('tandem:dual-answer', async (_e, prompt: string, modelAId: string, modelBId: string) => {
-    try {
-      return await tandemManager.dualAnswer(prompt, modelAId, modelBId)
-    } catch (e: any) {
-      return [{ modelId: 'error', modelName: '错误', content: e.message, elapsedMs: 0, tokensPerSec: 0 }]
-    }
-  })
-
-  /* ---------- 搭档 ---------- */
-  ipcMain.handle('tandem:partner-answer', async (_e, prompt: string, modelAId: string, modelBId: string, strategy: 'expertise' | 'content' | 'dimension') => {
-    try {
-      return await tandemManager.partnerAnswer(prompt, modelAId, modelBId, strategy)
-    } catch (e: any) {
-      return [{ modelId: 'error', modelName: '错误', content: e.message, elapsedMs: 0, tokensPerSec: 0 }]
-    }
-  })
-
-  /* ---------- 师徒 ---------- */
-  ipcMain.handle('tandem:mentor-answer', async (_e, prompt: string, mentorAId: string, apprenticeBId: string) => {
-    try {
-      return await tandemManager.mentorAnswer(prompt, mentorAId, apprenticeBId)
-    } catch (e: any) {
-      return { error: e.message, draft: null, verified: null, finalContent: '' }
-    }
-  })
-
-  /* ---------- 辩论 ---------- */
-  ipcMain.handle('tandem:debate-answer', async (_e, question: string, modelAId: string, modelBId: string, rounds?: number) => {
-    try {
-      return await tandemManager.debateAnswer(question, modelAId, modelBId, rounds ?? 2)
-    } catch (e: any) {
-      return { error: e.message, question, rounds: [], history: [] }
-    }
-  })
-
-  /* ---------- 流式聊天（串联首页） ---------- */
-  ipcMain.handle('tandem:chat', async (_e, mode: string, prompt: string, modelAId: string, modelBId: string, strategy?: string) => {
-    try {
-      const windows = BrowserWindow.getAllWindows()
-      // @ts-expect-error TS6133 - win reserved for future use
-      const win = windows.length > 0 ? windows[0] : null
-
-      switch (mode) {
-        case 'dual': {
-          const results = await tandemManager.dualAnswer(prompt, modelAId, modelBId)
-          return { success: true, mode, results }
-        }
-        case 'partner': {
-          const results = await tandemManager.partnerAnswer(prompt, modelAId, modelBId, (strategy as any) || 'expertise')
-          return { success: true, mode, results }
-        }
-        case 'mentor': {
-          const result = await tandemManager.mentorAnswer(prompt, modelAId, modelBId)
-          return { success: true, mode, result }
-        }
-        case 'debate': {
-          const result = await tandemManager.debateAnswer(prompt, modelAId, modelBId, 2)
-          return { success: true, mode, result }
-        }
-        default:
-          return { success: false, error: `未知模式: ${mode}` }
-      }
-    } catch (e: any) {
-      return { success: false, error: e.message }
     }
   })
 }

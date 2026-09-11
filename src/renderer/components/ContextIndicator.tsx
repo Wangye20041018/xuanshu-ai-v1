@@ -158,12 +158,13 @@ function Popover({ children, content }: { children: React.ReactNode; content: Re
 /* ============================================================
  * ContextIndicator 组件
  * ============================================================ */
-export default function ContextIndicator({ stats }: { stats?: ContextStats }) {
-  // 使用传入的 stats 或默认值，确保所有字段非 undefined
+export default function ContextIndicator({ stats }: { stats?: ContextStats | null }) {
+  // 使用传入的 stats 或默认值，确保所有字段非 undefined。
+  // 默认值一律为 0：无真实推送数据时显示 0%（待采集闪烁），严禁写死上限/伪 tokens 制造假显示。
   const data: Required<ContextStats> = {
-    totalTokens: stats?.totalTokens ?? 128000,
+    totalTokens: stats?.totalTokens ?? 0,
     usedTokens: stats?.usedTokens ?? 0,
-    systemTokens: stats?.systemTokens ?? 850,
+    systemTokens: stats?.systemTokens ?? 0,
     memoryTokens: stats?.memoryTokens ?? 0,
     historyTokens: stats?.historyTokens ?? (stats?.usedTokens ?? 0),
     compressedRounds: stats?.compressedRounds ?? 0,

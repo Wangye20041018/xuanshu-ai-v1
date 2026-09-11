@@ -4,7 +4,7 @@
  * ============================================================ */
 import { existsSync } from 'fs'
 import { EventEmitter } from 'events'
-import { cpus } from 'os'
+import { cpus, freemem } from 'os'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { POWERSHELL_EXE } from '../utils/powershell'
@@ -30,7 +30,15 @@ interface SessionPromptOptions {
 }
 
 interface CpuModel {
-  createContext(options: { contextSize: number; threads: number }): Promise<CpuContext>
+  createContext(options: {
+    contextSize: number
+    threads: number
+    /** flash attention 加速（实验特性，模型不支持时自动忽略） */
+    flashAttention?: boolean
+    /** KV cache 量化：q8_0 将 K/V cache 折半，6GB 显存下大幅降低 cache-ram 占用 */
+    experimentalKvCacheKeyType?: string
+    experimentalKvCacheValueType?: string
+  }): Promise<CpuContext>
   detokenize(tokens: number[]): string
   dispose?(): Promise<void>
 }
@@ -60,6 +68,8 @@ export interface CpuInferenceConfig {
   systemPrompt?: string
   /** v10.2 质量档全量加载层数（Qwen2-VL-2B 小模型完整驻留 GPU） */
   gpuLayers?: number
+  /** v13.x 多模态主模型：mmproj 投影文件路径（node-llama-cpp vision 加载） */
+  mmprojPath?: string
 }
 
 interface ChatMessage {
@@ -196,6 +206,14 @@ export class CpuInferenceEngine extends EventEmitter {
   private systemPrompt: string = ''
   private chatHistory: ContextHistory = { messages: [], summary: '', tokenCount: 0, maxTokens: 4096 }
   private modelToRam: boolean = false  // 模型是否被迁移到RAM
+  /** KV 暂挂时保存的加载配置（用于恢复时重建模型/上下文） */
+  private lastLoadConfig: CpuInferenceConfig | null = null
+  /** KV 暂挂时保存的对话上下文（含摘要与 token 统计） */
+  private parkedHistory: ContextHistory | null = null
+  private parkedSystemPrompt: string = ''
+  /** 结构化上下文·RAM 常驻层（全局骨架 + 会话摘要）：由本地 CPU provider 每次生成前
+   *  从 memorySkeleton / sessionSummaryStore 真实读取后注入，不再从磁盘拼接 */
+  private ramContext: { skeleton?: string; summaries?: string } = {}
   private stats = { totalTokens: 0, totalRequests: 0, avgLatency: 0, requests: [] as number[] }
 
   /** 引擎是否已加载模型 */
@@ -221,14 +239,23 @@ export class CpuInferenceEngine extends EventEmitter {
         modelPath: config.modelPath,
         // v10.2: 透传 gpuLayers（质量档部分卸载；默认 0 = 纯 CPU）
         gpuLayers: config.gpuLayers ?? 0,
+        // v13.x 多模态主模型：挂载 mmproj 视觉头，Qwopus 主模型直接支持发图
+        ...(config.mmprojPath ? { mmprojPath: config.mmprojPath } : {}),
       })
 
       const threads = config.threads || Math.min(4, Math.max(1, Math.floor(cpus().length / 2)))
       const ctxSize = config.contextSize || 4096
+      // P0-动态预算：q8_0 KV cache 按空闲系统内存兜底收缩，避免 cache-ram 溢出系统内存
+      const finalCtx = this.budgetContextSize(ctxSize)
 
       this.context = await this.model.createContext({
-        contextSize: ctxSize,
+        contextSize: finalCtx,
         threads,
+        // P0-上下文与显存优化：flash attention 必开（模型不支持时自动忽略）
+        flashAttention: true,
+        // P0-上下文与显存优化：KV cache q8_0 量化（K/V 折半），6GB 显存下显著降低 cache-ram 占用
+        experimentalKvCacheKeyType: 'Q8_0',
+        experimentalKvCacheValueType: 'Q8_0',
       })
 
       const { LlamaChatSession } = llama
@@ -245,9 +272,11 @@ export class CpuInferenceEngine extends EventEmitter {
       this.loaded = true
       this.currentModelPath = config.modelPath
       this.modelToRam = false
-      this.chatHistory.maxTokens = ctxSize
+      // KV 暂挂/恢复：保存本次加载配置，供 migrateToRAM 卸载后再 restoreFromRAM 重建
+      this.lastLoadConfig = { ...config }
+      this.chatHistory.maxTokens = finalCtx
       this.emit('loaded')
-      logger.debug(`[CPUEngine] 模型加载完成 (threads=${threads}, ctx=${ctxSize})`)
+      logger.debug(`[CPUEngine] 模型加载完成 (threads=${threads}, ctx=${finalCtx}, flashAttention=on, kvCache=q8_0)`)
       return true
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e)
@@ -316,23 +345,131 @@ export class CpuInferenceEngine extends EventEmitter {
   }
 
   /**
-   * 迁移模型到RAM / 从RAM恢复（模型切换时用）
+   * 迁移模型到RAM（KV 暂挂机制）：真实卸载模型/上下文释放显存，
+   * 保留加载配置与对话上下文，供后续 restoreFromRAM 重建后无缝续聊。
    */
   async migrateToRAM(): Promise<boolean> {
-    if (!this.loaded) return false
+    if (!this.loaded && !this.modelToRam) return false
+    if (this.modelToRam) return true // 已暂挂，幂等
+    if (!this.lastLoadConfig) {
+      logger.warn('[CPUEngine] migrateToRAM 失败：无加载配置可恢复')
+      return false
+    }
+
+    // 保存对话上下文（含摘要与统计），暂挂期间不丢失
+    this.parkedHistory = this.getChatHistory()
+    this.parkedSystemPrompt = this.systemPrompt
+
+    // 真实释放模型/上下文/会话，归还显存与内存
+    await this.releaseResources()
+    this.loaded = false
     this.modelToRam = true
-    logger.debug('[CPUEngine] 模型已标记为RAM驻留（上下文保留）')
+    this.emit('unloaded')
+    logger.debug('[CPUEngine] 模型已迁移到RAM（上下文与加载配置已保留）')
     return true
   }
 
+  /**
+   * 从RAM恢复（KV 恢复机制）：用暂挂前保存的配置重建模型与上下文，并恢复对话历史。
+   */
   async restoreFromRAM(): Promise<boolean> {
-    if (!this.loaded || !this.modelToRam) return false
+    if (!this.modelToRam) return false
+    if (!this.lastLoadConfig) {
+      logger.warn('[CPUEngine] restoreFromRAM 失败：无加载配置')
+      return false
+    }
+    const ok = await this.loadModel(this.lastLoadConfig)
+    if (!ok) {
+      logger.error('[CPUEngine] restoreFromRAM 失败：模型重建失败')
+      return false
+    }
+    // 恢复暂挂前的系统提示词与对话历史
+    if (this.parkedSystemPrompt) this.setSystemPrompt(this.parkedSystemPrompt)
+    if (this.parkedHistory) {
+      this.chatHistory = {
+        messages: [...this.parkedHistory.messages],
+        summary: this.parkedHistory.summary,
+        tokenCount: this.parkedHistory.tokenCount,
+        maxTokens: this.parkedHistory.maxTokens,
+      }
+    }
+    this.parkedHistory = null
+    this.parkedSystemPrompt = ''
     this.modelToRam = false
-    logger.debug('[CPUEngine] 模型已从RAM恢复')
+    logger.debug('[CPUEngine] 模型已从RAM恢复（上下文已重建）')
     return true
   }
 
   isInRAM(): boolean { return this.modelToRam }
+
+  /**
+   * 注入 RAM 常驻上下文（结构化组包）：全局骨架 + 会话摘要。
+   * 由本地 CPU provider 在每次生成前从 memorySkeleton / sessionSummaryStore 真实读取后写入。
+   */
+  setRamContext(ram: { skeleton?: string; summaries?: string }): void {
+    this.ramContext = ram || {}
+  }
+
+  /** 读取当前 RAM 常驻上下文（供状态上报/诊断） */
+  getRamContext(): { skeleton?: string; summaries?: string } {
+    return { ...this.ramContext }
+  }
+
+  /**
+   * migrateToRAM 停车后再加载同模型时恢复暂挂上下文（真实内存态续聊）。
+   * 模型路径一致 → 恢复历史；不一致 → 丢弃陈旧暂挂，避免脏上下文串会话。
+   */
+  restoreParkedIfSame(modelPath: string): void {
+    if (!this.modelToRam) return
+    const parkPath = this.lastLoadConfig?.modelPath
+    if (parkPath && parkPath === modelPath && this.parkedHistory) {
+      if (this.parkedSystemPrompt) this.setSystemPrompt(this.parkedSystemPrompt)
+      this.chatHistory = {
+        messages: [...this.parkedHistory.messages],
+        summary: this.parkedHistory.summary,
+        tokenCount: this.parkedHistory.tokenCount,
+        maxTokens: this.parkedHistory.maxTokens,
+      }
+      logger.debug('[CPUEngine] 已从 RAM 恢复同一模型的对话上下文')
+    } else {
+      logger.debug('[CPUEngine] 暂挂上下文模型不一致，丢弃陈旧暂挂')
+    }
+    this.parkedHistory = null
+    this.parkedSystemPrompt = ''
+    this.modelToRam = false
+  }
+
+  /**
+   * 释放模型/上下文/会话资源（不重置对话状态；供 KV 暂挂复用）
+   */
+  private async releaseResources(): Promise<void> {
+    this.session = null
+    try { if (this.context && typeof (this.context as any).dispose === 'function') await (this.context as any).dispose() } catch (e) { logger.error('[CPUEngine] 释放上下文失败:', e) }
+    this.context = null
+    try { if (this.model && typeof this.model.dispose === 'function') await this.model.dispose() } catch (e) { logger.error('[CPUEngine] 释放模型失败:', e) }
+    this.model = null
+  }
+
+  /**
+   * 动态 contextSize 预算：q8_0 KV cache 约 85B/token，按空闲系统内存兜底收缩，
+   * 避免超长上下文导致 cache-ram 溢出系统内存（32GB 本机实测 16384~32768 均稳定）。
+   */
+  private budgetContextSize(requested: number): number {
+    try {
+      const freememMB = Math.floor(freemem() / 1024 / 1024)
+      // 预留 4GB 系统内存给系统与其它应用；q8 KV ≈ 85B/token
+      const safeMB = Math.max(512, freememMB - 4096)
+      const maxByRam = Math.floor((safeMB * 1024) / 85)
+      const final = Math.max(1024, Math.min(requested, maxByRam))
+      if (final < requested) {
+        logger.warn(`[CPUEngine] 空闲内存 ${freememMB}MB 偏紧，contextSize 预算 ${requested} → ${final}（q8 KV 防溢出）`)
+      }
+      return final
+    } catch (e) {
+      logger.warn(`[CPUEngine] contextSize 预算计算失败，使用原值 ${requested}:`, e)
+      return requested
+    }
+  }
 
   /**
    * 获取对话历史
@@ -391,6 +528,14 @@ export class CpuInferenceEngine extends EventEmitter {
       parts.push(`<|im_start|>system\n${this.systemPrompt}<|im_end|>`)
     }
 
+    // 结构化组包·RAM 常驻层注入：全局骨架 + 会话摘要（真实内存态，非磁盘拼接）
+    if (this.ramContext.skeleton) {
+      parts.push(`<|im_start|>system\n[全局记忆 MEMORY.md] ${this.ramContext.skeleton}<|im_end|>`)
+    }
+    if (this.ramContext.summaries) {
+      parts.push(`<|im_start|>system\n[会话摘要] ${this.ramContext.summaries}<|im_end|>`)
+    }
+
     if (this.chatHistory.summary) {
       parts.push(`<|im_start|>system\n[前文摘要] ${this.chatHistory.summary}<|im_end|>`)
     }
@@ -432,11 +577,16 @@ export class CpuInferenceEngine extends EventEmitter {
 
   async unload(): Promise<void> {
     this.session = null
+    this.lastLoadConfig = null
+    this.parkedHistory = null
+    this.parkedSystemPrompt = ''
+    this.modelToRam = false
     try { if (this.context && typeof this.context.dispose === 'function') await this.context.dispose() } catch (e) { logger.error('[CPUEngine] 释放上下文失败:', e) }
     this.context = null
     try { if (this.model && typeof this.model.dispose === 'function') await this.model.dispose() } catch (e) { logger.error('[CPUEngine] 释放模型失败:', e) }
     this.model = null
     this.loaded = false
+    this.ramContext = {}
     this.chatHistory = { messages: [], summary: '', tokenCount: 0, maxTokens: 4096 }
     logger.debug('[CPUEngine] 模型已卸载')
   }

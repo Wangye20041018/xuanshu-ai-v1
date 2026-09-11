@@ -1,0 +1,219 @@
+
+> xuanshu-ai@12.3.0 dev
+> node scripts/electron-launch.mjs dev -- --remote-debugging-port=9222
+
+[36mvite v5.4.21 [32mbuilding SSR bundle for development...[36m[39m
+transforming...
+[32m✓[39m 1146 modules transformed.
+rendering chunks...
+[1m[33m[plugin:vite:reporter][39m[22m [33m[plugin vite:reporter] 
+(!) E:/玄枢AI/xuanshu-ai-dev/src/main/model-registry/index.ts is dynamically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/inference/visual-reasoning.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/tandem-manager/index.ts but also statically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/agent/model-adapter.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/health-check/index.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/index.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/register/ipc.register.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/register/modules.register.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/scheduler/index.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/scheduler/profiles.ts, dynamic import will not move module into another chunk.
+[39m
+[1m[33m[plugin:vite:reporter][39m[22m [33m[plugin vite:reporter] 
+(!) E:/玄枢AI/xuanshu-ai-dev/src/main/fulltext-search/index.ts is dynamically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/agent/tool-registry.ts but also statically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/register/ipc.register.ts, dynamic import will not move module into another chunk.
+[39m
+[1m[33m[plugin:vite:reporter][39m[22m [33m[plugin vite:reporter] 
+(!) E:/玄枢AI/xuanshu-ai-dev/src/main/tts/embedded-tts.ts is dynamically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/ipc/tts.ipc.ts but also statically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/voice-engine/index.ts, dynamic import will not move module into another chunk.
+[39m
+[1m[33m[plugin:vite:reporter][39m[22m [33m[plugin vite:reporter] 
+(!) E:/玄枢AI/xuanshu-ai-dev/src/main/agent/agent-manifests.ts is dynamically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/agent/index.ts, E:/玄枢AI/xuanshu-ai-dev/src/main/agent/index.ts but also statically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/agent/preset-agents.ts, dynamic import will not move module into another chunk.
+[39m
+[1m[33m[plugin:vite:reporter][39m[22m [33m[plugin vite:reporter] 
+(!) E:/玄枢AI/xuanshu-ai-dev/src/main/agent/preset-agents.ts is dynamically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/agent/index.ts but also statically imported by E:/玄枢AI/xuanshu-ai-dev/src/main/register/ipc.register.ts, dynamic import will not move module into another chunk.
+[39m
+[2mout/main/[22m[36mcontrol-whitelist-fIsTiy-S.js  [39m[1m[2m    3.68 kB[22m[1m[22m
+[2mout/main/[22m[36magent-factory-wT21Q3kp.js      [39m[1m[2m    4.99 kB[22m[1m[22m
+[2mout/main/[22m[36mteam-templates-Ca5cnY3_.js     [39m[1m[2m    6.13 kB[22m[1m[22m
+[2mout/main/[22m[36mvisual-reasoning-CKMZGbJw.js   [39m[1m[2m   10.15 kB[22m[1m[22m
+[2mout/main/[22m[36mmeta-conductor-ChzDFF5R.js     [39m[1m[2m   12.01 kB[22m[1m[22m
+[2mout/main/[22m[36mmcp-tools-DVJnuvCk.js          [39m[1m[2m   18.30 kB[22m[1m[22m
+[2mout/main/[22m[36mindex.js                       [39m[1m[33m3,377.18 kB[39m[22m
+[32m✓ built in 6.26s[39m
+[32m
+build the electron main process successfully[39m
+[90m
+-----
+[39m
+[36mvite v5.4.21 [32mbuilding SSR bundle for development...[36m[39m
+transforming...
+[32m✓[39m 1 modules transformed.
+rendering chunks...
+[2mout/preload/[22m[36mindex.js  [39m[1m[2m4.39 kB[22m[1m[22m
+[32m✓ built in 18ms[39m
+[32m
+build the electron preload files successfully[39m
+[90m
+-----
+[39m
+Forced re-optimization of dependencies
+[32mdev server running for the electron renderer process at:
+[39m
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[32m
+start electron app...
+[39m
+
+[2026-09-09T04:59:27.245Z] [INFO] [ApiQuotaTracker] Quota cache path: C:\Users\24228\AppData\Roaming\xuanshu-ai\quota-cache.json
+[2026-09-09T04:59:27.359Z] [INFO] [ContextWindowManager] ContextWindowManager created. maxTokens=128000
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/27681c36-1801-4983-a153-7f9d5254075d
+[2026-09-09T04:59:30.049Z] [DEBUG] [App] 玄枢AI 主进程启动...
+[2026-09-09T04:59:30.185Z] [INFO] [global] [TandemManager] llama-server: E:\玄枢AI\xuanshu-ai-dev\resources\llama-server.exe
+[2026-09-09T04:59:30.185Z] [INFO] [global] [ModelRegistry] IPC handlers 已注册
+[2026-09-09T04:59:30.185Z] [INFO] [global] [CloudModelManager] IPC handlers 已注册
+[2026-09-09T04:59:30.185Z] [INFO] [global] [Scheduler] IPC handlers registered
+[2026-09-09T04:59:30.186Z] [DEBUG] [global] [TTS IPC] Handler 注册完成（内嵌 CosyVoice 2）
+[2026-09-09T04:59:30.187Z] [DEBUG] [global] [Agent] setupVisualAgentHandlers registered
+[2026-09-09T04:59:30.187Z] [DEBUG] [global] [SkillPack] 注册技能包: wps.office（WPS Office，10 项能力）
+[2026-09-09T04:59:30.187Z] [DEBUG] [global] [SkillPack] 注册技能包: browser.generic（浏览器，4 项能力）
+[2026-09-09T04:59:30.187Z] [DEBUG] [global] [SkillPack] 注册技能包: wechat.pc（微信，3 项能力）
+[2026-09-09T04:59:30.187Z] [DEBUG] [global] [SkillPack] 注册技能包: system.native（系统工具，42 项能力）
+[2026-09-09T04:59:30.188Z] [INFO] [global] [SkillPack·学习] 已加载 0 个学习型技能包
+[2026-09-09T04:59:30.189Z] [INFO] [UIAutomation] Setting up UIAutomation IPC handlers...
+[2026-09-09T04:59:30.189Z] [INFO] [UIAutomation] UIAutomation IPC handlers registered
+[2026-09-09T04:59:30.190Z] [DEBUG] [global] [Agent] setupAgentHandlers registered
+[2026-09-09T04:59:30.190Z] [DEBUG] [global] [Orchestrator] setupSwarmHandlers registered
+[2026-09-09T04:59:30.206Z] [INFO] [global] [PresetAgents] 已补齐 38 个预置智能体
+[2026-09-09T04:59:30.220Z] [INFO] [global] [PresetAgents] 已补齐 20 个 manifest 智能体（§5 二十智能体）
+[2026-09-09T04:59:30.220Z] [INFO] [global] [HealthCheck] IPC handlers 已注册
+[2026-09-09T04:59:30.226Z] [INFO] [global] [ModelRegistry] 已保存 1 个模型
+[2026-09-09T04:59:30.226Z] [INFO] [global] [ModelRegistry] 注册模型: Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) (E:\模型库\Qwopus3.5-9B-Coder-MTP-Q4_K_M.gguf) → 端口 8082
+[2026-09-09T04:59:30.226Z] [DEBUG] [App] Registered model: Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) (E:\模型库\Qwopus3.5-9B-Coder-MTP-Q4_K_M.gguf) | mmproj: E:\模型库\mmproj-Qwopus3.5-9B-Coder-MTP-F32.gguf
+[2026-09-09T04:59:31.175Z] [INFO] [global] [ModelRegistry] 已保存 2 个模型
+[2026-09-09T04:59:31.175Z] [INFO] [global] [ModelRegistry] 注册模型: nomic-embed-text-v1.5 (E:\玄枢AI\xuanshu-ai-dev\resources\models\nomic-embed.gguf) → 端口 8083
+[2026-09-09T04:59:31.175Z] [DEBUG] [App] Registered model: nomic-embed-text-v1.5 (E:\玄枢AI\xuanshu-ai-dev\resources\models\nomic-embed.gguf)
+[2026-09-09T04:59:35.297Z] [INFO] [global] [ModelRegistry] 已保存 3 个模型
+[2026-09-09T04:59:35.297Z] [INFO] [global] [ModelRegistry] 注册模型: Qwen2-VL-2B (视觉备用) (E:\玄枢AI\xuanshu-ai-dev\resources\models\Qwen2-VL-2B-Instruct-Q4_K_M.gguf) → 端口 8084
+[2026-09-09T04:59:35.298Z] [DEBUG] [App] Registered model: Qwen2-VL-2B (视觉备用) (E:\玄枢AI\xuanshu-ai-dev\resources\models\Qwen2-VL-2B-Instruct-Q4_K_M.gguf) | mmproj: E:\模型库\mmproj-Qwen2-VL-2B-Instruct-f16.gguf
+[2026-09-09T04:59:35.303Z] [INFO] [global] [ModelRegistry] 已保存 4 个模型
+[2026-09-09T04:59:35.303Z] [INFO] [global] [ModelRegistry] 注册模型: DeepSeek-V4-Pro-Qwen3.5-9B (数学/STEM/复杂推理) (E:\模型库\DeepSeek-V4-Pro-Qwen3.5-9B-MTP-Q4_K_M.gguf) → 端口 8085
+[2026-09-09T04:59:35.304Z] [DEBUG] [App] Registered model: DeepSeek-V4-Pro-Qwen3.5-9B (数学/STEM/复杂推理) (E:\模型库\DeepSeek-V4-Pro-Qwen3.5-9B-MTP-Q4_K_M.gguf)
+[2026-09-09T04:59:35.338Z] [INFO] [Tray] [Tray] 系统托盘已创建
+[2026-09-09T04:59:35.352Z] [DEBUG] [global] [PersonaLoader] 已加载 44 套人格（来源 resources/personas，canonical）
+[2026-09-09T04:59:35.352Z] [INFO] [global] [ToolRegistry] 注册工具: web_search (search)
+[2026-09-09T04:59:35.352Z] [INFO] [global] [ToolRegistry] 注册工具: fetch_webpage (search)
+[2026-09-09T04:59:35.352Z] [INFO] [global] [ToolRegistry] 注册工具: get_weather (search)
+[2026-09-09T04:59:35.352Z] [INFO] [global] [ToolRegistry] 注册工具: get_exchange_rate (search)
+[2026-09-09T04:59:35.352Z] [INFO] [global] [ToolRegistry] 注册工具: get_news (search)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: get_current_time (search)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: search_with_rag (search)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: query_knowledge_graph (knowledge)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: search_entities (knowledge)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: search_memories (knowledge)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: search_memories_by_type (knowledge)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: control_computer (vision)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: analyze_task (operation)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: open_software (system)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: query_app_status (system)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [SoftwareTools] 已注册 open_software / query_app_status
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: local_file_search (knowledge)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: self_modify_list_files (system)
+[2026-09-09T04:59:35.353Z] [INFO] [global] [ToolRegistry] 注册工具: self_modify_read_file (system)
+[2026-09-09T04:59:35.354Z] [INFO] [global] [ToolRegistry] 注册工具: self_modify_preview_diff (system)
+[2026-09-09T04:59:35.355Z] [INFO] [global] [ToolRegistry] 注册工具: ai_apps_list (system)
+[2026-09-09T04:59:35.355Z] [INFO] [global] [ToolRegistry] 注册工具: ai_apps_register (system)
+[2026-09-09T04:59:35.355Z] [INFO] [global] [ToolRegistry] 注册工具: ai_apps_launch (system)
+[2026-09-09T04:59:35.355Z] [INFO] [global] [ToolRegistry] 注册工具: ai_apps_send_task (system)
+[2026-09-09T04:59:35.355Z] [INFO] [global] [ToolRegistry] 注册工具: ai_apps_collect_result (system)
+[2026-09-09T04:59:35.355Z] [INFO] [global] [MetaConductor] 已注册 5 个总调度工具（ai_apps_*）
+[2026-09-09T04:59:35.356Z] [INFO] [global] [ToolRegistry] 注册工具: browser_navigate (operation)
+[2026-09-09T04:59:35.356Z] [INFO] [global] [ToolRegistry] 注册工具: browser_snapshot (operation)
+[2026-09-09T04:59:35.356Z] [INFO] [global] [ToolRegistry] 注册工具: browser_click (operation)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: browser_type (operation)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: browser_press (operation)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: browser_scroll (operation)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: browser_back (operation)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: browser_screenshot (operation)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: mcp_list_servers (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: browser_evaluate (operation)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [McpTools] MCP 工具注册完成，共 10 个 (browser_* + mcp_list_servers)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 工具注册完成，共 34 个
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: click_at (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: double_click_at (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: right_click_at (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: type_text (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: press_keys (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: drag_at (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: scroll_at (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ToolRegistry] 注册工具: take_screenshot (system)
+[2026-09-09T04:59:35.357Z] [INFO] [global] [ControlTools] 已注册 8 个细粒度控制工具
+[2026-09-09T04:59:35.362Z] [INFO] [global] [PanicStop] 已注册紧急暂停快捷键: Ctrl+Shift+F12
+[2026-09-09T04:59:35.364Z] [DEBUG] [global] [2026-09-09T04:59:35.364Z] [DynamicOp:INFO] DynamicOperationEngine initialized
+[2026-09-09T04:59:35.373Z] [DEBUG] [App] Creating window...
+[2026-09-09T04:59:35.374Z] [DEBUG] [Window] Creating main window...
+[2026-09-09T04:59:35.517Z] [DEBUG] [global] [IPCAuth] 注册窗口: id=1
+[2026-09-09T04:59:35.517Z] [DEBUG] [Window] Loading renderer URL: http://127.0.0.1:5173
+[2026-09-09T04:59:35.580Z] [DEBUG] [App] Window created, starting module initialization...
+Skip checkForUpdates because application is not packed and dev update config is not forced
+[2026-09-09T04:59:35.796Z] [DEBUG] [App] DI container: 8 services registered
+[2026-09-09T04:59:35.797Z] [DEBUG] [App] Module initialization completed
+[2026-09-09T04:59:36.657Z] [DEBUG] [App] Deferred heavy module initialization starting...
+[2026-09-09T04:59:36.658Z] [DEBUG] [VoiceEngine] [VoiceEngine] 初始化完成（内嵌 TTS），音色数=1
+[2026-09-09T04:59:36.663Z] [DEBUG] [global] [KnowledgeGraph] common-knowledge.json 未找到，使用内嵌规则
+[2026-09-09T04:59:36.664Z] [DEBUG] [App] Deferred heavy module initialization completed
+[2026-09-09T04:59:36.921Z] [DEBUG] [App] app:ready 发送 (正常完成)
+[2026-09-09T04:59:36.923Z] [INFO] [global] [EmbeddedTTS] 初始化: modelReady=false modelDir=E:\玄枢AI\xuanshu-ai-dev\resources\voice-models\vits-melo-tts-zh_en python=E:\玄枢AI\xuanshu-ai-dev\resources\python\python.exe
+[2026-09-09T04:59:36.923Z] [DEBUG] [VoiceEngine] [VoiceEngine] 内嵌高质量 TTS 未就绪（模型待下载）
+[2026-09-09T04:59:36.925Z] [DEBUG] [App] model-registry: 无默认启动模型，跳过自动激活
+[2026-09-09T04:59:37.035Z] [DEBUG] [App] Force showing window after timeout
+[2026-09-09T04:59:37.050Z] [DEBUG] [Window] Window shown
+[2026-09-09T04:59:38.800Z] [DEBUG] [App] Auto-load: 正在加载默认模型 Qwen2-VL-2B (视觉备用) (qwen2-vl-2b)
+[2026-09-09T04:59:39.129Z] [DEBUG] [ModelManager] [ModelManager] GPU 可用 (6144MB)，优先尝试 SGLang: Qwen2-VL-2B (视觉备用)
+[2026-09-09T04:59:39.180Z] [DEBUG] [ModelManager] [ModelManager] 未启用 WSL2，SGLang 可选加速路径不可用（非必需）；主引擎走 tandem llama-server GPU，此日志不代表模型运行在 CPU
+[2026-09-09T04:59:39.299Z] [DEBUG] [ModelManager] [ModelManager] 尝试加载: Qwen2-VL-2B (视觉备用)（gpuLayers=24, contextSize=262144）
+[2026-09-09T04:59:39.852Z] [DEBUG] [App] [ProcessGuardian] SGLang server 未运行，跳过守护注册
+[2026-09-09T04:59:39.853Z] [DEBUG] [App] Background initialization completed
+[2026-09-09T04:59:39.854Z] [DEBUG] [Window] Window ready-to-show, displaying window...
+[2026-09-09T04:59:39.855Z] [DEBUG] [Window] Window shown
+[2026-09-09T04:59:39.856Z] [DEBUG] [Window] Renderer finished loading
+[2026-09-09T04:59:40.449Z] [DEBUG] [global] [CPUEngine] 加载模型: E:\玄枢AI\xuanshu-ai-dev\resources\models\Qwen2-VL-2B-Instruct-Q4_K_M.gguf
+[2026-09-09T04:59:44.929Z] [DEBUG] [global] [CPUEngine] 已启用 Vulkan GPU 后端
+[node-llama-cpp] load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[2026-09-09T04:59:46.080Z] [INFO] [global] [LocalAiScanner] 扫描完成，发现 1 个 AI 客户端
+[2026-09-09T04:59:46.984Z] [WARN] [global] [CPUEngine] 空闲内存 20471MB 偏紧，contextSize 预算 262144 → 197270（q8 KV 防溢出）
+[2026-09-09T04:59:46.996Z] [ERROR] [global] [CPUEngine] 加载失败: A context size of 197270 is too large for the available VRAM
+[2026-09-09T04:59:46.997Z] [ERROR] [ModelManager] [ModelManager] CPU 推理加载失败: Error [ERR_UNHANDLED_ERROR]: Unhandled error. ('A context size of 197270 is too large for the available VRAM')
+[2026-09-09T04:59:46.998Z] [DEBUG] [App] Auto-load: 模型 Qwen2-VL-2B (视觉备用) 加载失败
+[2026-09-09T05:01:59.108Z] [INFO] [global] [TandemManager] Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) MTP 自动识别: 开关=true 识别为MTP=true 模式=gpu → 带MTP启动
+[2026-09-09T05:01:59.108Z] [INFO] [global] [TandemManager] 启动: Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) 端口=8086 ngl=22 ctx=262144 MTP=on
+[2026-09-09T05:02:41.737Z] [DEBUG] [global] [TandemManager:Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态)] error while handling argument "-fa": error: unknown value for --flash-attn: '--spec-type'
+
+
+usage:
+-fa,   --flash-attn [on|off|auto]       set Flash Attention use ('on', 'off', or 'auto', default:
+[2026-09-09T05:02:41.781Z] [WARN] [global] [TandemManager] Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) MTP 启动退出(code=1)，降级为非 MTP 重启
+[2026-09-09T05:02:41.781Z] [INFO] [global] [TandemManager] 启动: Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) 端口=8086 ngl=22 ctx=262144 MTP=off
+[2026-09-09T05:02:42.085Z] [DEBUG] [global] [TandemManager:Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态)] error while handling argument "-fa": expected value for argument
+
+usage:
+-fa,   --flash-attn [on|off|auto]       set Flash Attention use ('on', 'off', or 'auto', default: 'auto')
+                 
+[2026-09-09T05:02:54.698Z] [INFO] [global] [TandemManager] Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) MTP 自动识别: 开关=true 识别为MTP=true 模式=gpu → 带MTP启动
+[2026-09-09T05:02:54.698Z] [INFO] [global] [TandemManager] 启动: Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) 端口=8087 ngl=22 ctx=262144 MTP=on
+[2026-09-09T05:02:54.954Z] [DEBUG] [global] [TandemManager:Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态)] error while handling argument "-fa": error: unknown value for --flash-attn: '--spec-type'
+
+
+usage:
+-fa,   --flash-attn [on|off|auto]       set Flash Attention use ('on', 'off', or 'auto', default:
+[2026-09-09T05:02:54.987Z] [WARN] [global] [TandemManager] Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) MTP 启动退出(code=1)，降级为非 MTP 重启
+[2026-09-09T05:02:54.987Z] [INFO] [global] [TandemManager] 启动: Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态) 端口=8087 ngl=22 ctx=262144 MTP=off
+[2026-09-09T05:02:55.157Z] [DEBUG] [global] [TandemManager:Qwopus3.5-9B-Coder-MTP (代码/日常主力·多模态)] error while handling argument "-fa": expected value for argument
+
+usage:
+-fa,   --flash-attn [on|off|auto]       set Flash Attention use ('on', 'off', or 'auto', default: 'auto')
+                 
+[2026-09-09T05:03:01.912Z] [DEBUG] [global] [IPCAuth] 注销窗口: id=1
+[2026-09-09T05:03:01.936Z] [DEBUG] [App] App before-quit: cleaning up resources
+[2026-09-09T05:03:01.936Z] [INFO] [ProcessGuardian] [ProcessGuardian] 停止全部子进程...
+[2026-09-09T05:03:01.937Z] [DEBUG] [App] [Main] 正在 flush vector store...
+[2026-09-09T05:03:01.938Z] [DEBUG] [App] [Main] vectorStore flush 完成
+[2026-09-09T05:03:01.939Z] [ERROR] [App] [Main] AbortController 清理失败: Error: Cannot find module '../ipc/chat.ipc'
+Require stack:
+- E:\玄枢AI\xuanshu-ai-dev\out\main\index.js
+[2026-09-09T05:03:01.940Z] [DEBUG] [MobileChannel] [MobileChannel] Server stopped
+[2026-09-09T05:03:01.942Z] [ERROR] [App] [Main] cleanup "voiceEngine.stopSpeaking" 同步抛错: Error: Cannot find module '../index'
+Require stack:
+- E:\玄枢AI\xuanshu-ai-dev\out\main\index.js
+[2026-09-09T05:03:01.943Z] [DEBUG] [global] [2026-09-09T05:03:01.943Z] [DynamicOp:INFO] DynamicOperationEngine shutting down
+[2026-09-09T05:03:01.943Z] [WARN] [App] [Main] before-quit cleanup: 1 个任务未完成 -> voiceEngine.stopSpeaking
+[2026-09-09T05:03:01.944Z] [DEBUG] [App] App before-quit: cleanup completed

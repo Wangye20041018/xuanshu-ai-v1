@@ -31,6 +31,7 @@ canvas { display: block; border-radius: 50%; }
 <!-- 右键快捷菜单 -->
 <div id="ctxmenu" style="display:none;position:fixed;top:0;left:0;z-index:99;min-width:120px;background:rgba(24,26,36,0.96);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:6px;box-shadow:0 8px 30px rgba(0,0,0,0.45);font-family:'Segoe UI','Microsoft YaHei',sans-serif;font-size:13px;color:#e4e6ed;-webkit-app-region:no-drag;">
   <div class="ctx-item" data-act="open-main">打开主窗口</div>
+  <div class="ctx-item" data-act="voice-panel">语音交互面板</div>
   <div class="ctx-item" data-act="panel">快捷面板</div>
   <div style="height:1px;background:rgba(255,255,255,0.08);margin:5px 0"></div>
   <div class="ctx-item" data-act="hide" style="color:#f87171">隐藏悬浮球</div>
@@ -174,6 +175,7 @@ canvas { display: block; border-radius: 50%; }
   }
 
   // ---- 交互 ----
+  // 单击：语音交互球——一键即说（打开面板并自动聆听）；双击：快捷操作面板
   let clickTimer = null
   canvas.addEventListener('click', function () {
     if (clickTimer) {
@@ -183,8 +185,8 @@ canvas { display: block; border-radius: 50%; }
     } else {
       clickTimer = setTimeout(function () {
         clickTimer = null
-        try { window.api.invoke('floating-ball:open-main') } catch (e) {}
-      }, 260)
+        try { window.api.invoke('floating-ball:voice-toggle') } catch (e) {}
+      }, 320)
     }
   })
 
@@ -206,6 +208,7 @@ canvas { display: block; border-radius: 50%; }
     const act = item.getAttribute('data-act')
     hideCtxMenu()
     if (act === 'open-main') { try { window.api.invoke('floating-ball:open-main') } catch (err) {} }
+    else if (act === 'voice-panel') { try { window.api.invoke('floating-ball:open-voice-panel') } catch (err) {} }
     else if (act === 'panel') { try { window.api.invoke('floating-ball:show-panel') } catch (err) {} }
     else if (act === 'hide') { try { window.api.invoke('floating-ball:hide') } catch (err) {} }
   })
@@ -231,6 +234,14 @@ canvas { display: block; border-radius: 50%; }
   if (window.api && window.api.on) {
     window.api.on('floating-ball:set-state', function (_e, s) { applyState(s) })
     window.api.on('floating-ball:set-emotion', function (_e, hex) { applyEmotion(hex) })
+    // 人在感知联动：离开 → 球体转暗灰 + 低频呼吸（体现"无人值守"）
+    window.api.on('floating-ball:set-presence', function (_e, p) {
+      if (p === 'away') {
+        document.documentElement.style.filter = 'saturate(0.3) brightness(0.85)'
+      } else if (p === 'present') {
+        document.documentElement.style.filter = ''
+      }
+    })
   }
 
   draw()

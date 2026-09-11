@@ -1,9 +1,15 @@
 /**
- * ElementRecognizer v2.0 — 智能UI元素识别
- * 真人级屏幕理解：视觉模型 + OCR + 启发式 + 上下文记忆
+ * ElementRecognizer v3.0 — 智能UI元素识别（大修第一批 · 三级回退）
+ * 屏幕理解链路：UIA 控件树 → OCR 文字提取 → 2B 视觉模型兜底
+ * 日常"懂屏幕"场景（UIA/OCR）零显存、不依赖视觉模型，视觉模型仅兜底"看画面内容"。
  */
 import { visionModel } from '../vision'
+import { scanViaUIA } from './uia-bridge'
+import { ocrEngine, OcrResult } from './ocr'
 import { logger } from '../../shared/logger'
+
+/** 识别来源：标记本次识别命中的链路级别 */
+export type RecognitionSource = 'uia' | 'ocr' | 'vision'
 
 export enum ElementType {
   BUTTON = 'BUTTON', TEXT_BOX = 'TEXT_BOX', DROPDOWN = 'DROPDOWN',
@@ -60,10 +66,78 @@ export class ElementRecognizer {
   private lastElements: Element[] = []
 
   /**
-   * 识别屏幕中的所有 UI 元素（增强版）
-   * 使用视觉模型深入理解屏幕内容，模拟真人观察
+   * 统一识别入口（v3.0 · 三级回退）
+   * 1) UIA 控件树：标准控件直接命中（零显存、最快）
+   * 2) OCR 文字提取：无标准控件时用 Windows 本地 OCR 读屏（零显存）
+   * 3) 2B 视觉模型兜底：仅"看画面内容/图片/摄像头"或前两级失败时调用
    */
-  async identifyElements(imageBase64: string, taskContext?: string): Promise<{ elements: Element[]; context: ScreenContext }> {
+  async recognizeScreen(base64: string, taskContext?: string): Promise<{ elements: Element[]; context: ScreenContext; source: RecognitionSource }> {
+    // ---- 第 1 级：UIA 控件树 ----
+    try {
+      const uiaElements = await scanViaUIA()
+      if (uiaElements.length > 0) {
+        const context: ScreenContext = {
+          description: `UIA 控件树命中 ${uiaElements.length} 个标准控件（零显存）`,
+          applicationName: null,
+          windowTitle: null,
+          dialogOpen: false,
+          loading: false,
+          errorMessage: null,
+          suggestions: ['已通过 UI Automation 控件树识别屏幕（零显存）', '可用控件坐标直接操作'],
+        }
+        this.lastElements = uiaElements
+        this.contextMemory.push(context)
+        if (this.contextMemory.length > 20) this.contextMemory.shift()
+        return { elements: uiaElements, context, source: 'uia' }
+      }
+      logger.debug('[ElementRecognizer] UIA 控件树未命中，进入 OCR 层')
+    } catch (e) {
+      logger.warn('[ElementRecognizer] UIA 扫描失败，进入 OCR 层:', e)
+    }
+
+    // ---- 第 2 级：OCR 文字提取（Windows 本地 OCR） ----
+    try {
+      const ocr: OcrResult = await ocrEngine.recognize(base64)
+      if (ocr.ok && ocr.words.length > 0) {
+        const elements: Element[] = ocr.words.map((w) => ({
+          type: ElementType.TEXT_LABEL,
+          label: w.text,
+          bbox: { x: w.x, y: w.y, w: w.w, h: w.h },
+          confidence: 0.8,
+          state: 'normal' as const,
+          textContent: w.text,
+          parentId: null,
+          clickable: false,
+        }))
+        const context: ScreenContext = {
+          description: `本地 OCR 识别到 ${ocr.words.length} 处文字（零显存）`,
+          applicationName: null,
+          windowTitle: null,
+          dialogOpen: false,
+          loading: false,
+          errorMessage: null,
+          suggestions: ['已通过本地 OCR 提取屏幕文字（零显存）', '可基于文字内容定位交互目标'],
+        }
+        this.lastElements = elements
+        this.contextMemory.push(context)
+        if (this.contextMemory.length > 20) this.contextMemory.shift()
+        return { elements, context, source: 'ocr' }
+      }
+      logger.debug('[ElementRecognizer] OCR 未识别到文字，进入视觉模型兜底')
+    } catch (e) {
+      logger.warn('[ElementRecognizer] OCR 失败，进入视觉模型兜底:', e)
+    }
+
+    // ---- 第 3 级：2B 视觉模型兜底（仅看画面内容） ----
+    const { elements, context } = await this.identifyViaVision(base64, taskContext)
+    return { elements, context, source: 'vision' }
+  }
+
+  /**
+   * 视觉模型识别（第 3 级兜底）
+   * 仅当 UIA / OCR 均无法理解屏幕时调用，用于"看画面内容"。
+   */
+  async identifyViaVision(imageBase64: string, taskContext?: string): Promise<{ elements: Element[]; context: ScreenContext }> {
     const prompt = `You are a computer vision expert analyzing a screenshot. Look at this screen as if you are a real person sitting in front of the computer.
 
 TASK CONTEXT: ${taskContext || 'General UI analysis'}
@@ -312,13 +386,14 @@ Describe what changed. Return JSON: {"changed": true/false, "description": "what
   }
 
   /**
-   * 分析屏幕截图并返回识别结果（IPC通道使用）
+   * 分析屏幕截图并返回识别结果（IPC通道使用，走三级回退）
    */
-  async analyzeScreen(base64: string, task: string): Promise<{ elements: Element[]; summary: string }> {
-    const { elements, context } = await this.identifyElements(base64, task)
+  async analyzeScreen(base64: string, task: string): Promise<{ elements: Element[]; summary: string; source: RecognitionSource }> {
+    const { elements, context, source } = await this.recognizeScreen(base64, task)
     return {
       elements,
-      summary: context.description || `找到 ${elements.length} 个元素`
+      summary: context.description || `找到 ${elements.length} 个元素`,
+      source,
     }
   }
 }

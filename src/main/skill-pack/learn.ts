@@ -11,6 +11,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from '
 import type { SkillPack } from './types'
 import { skillPackManager } from './index'
 import { logger } from '../../shared/logger'
+import { addMemorySync } from '../ipc/memory.ipc'
+import { vectorStore } from '../rag/vector-store'
+import { getEmbedding, splitText } from '../rag/embedding'
 
 interface LearnedSkillPackMeta {
   /** 学习型技能包 ID，如 'learned.wps.001' */
@@ -110,7 +113,6 @@ export function learnFromExecution(
   appName?: string
 ): { packId: string; isNew: boolean } | null {
   if (!steps || steps.length === 0) return null
-
   const appKeywords = extractAppKeywords(intent, windowTitle)
   const app = appName || appKeywords[0] || '未知应用'
   const intents = extractKeywords(intent)
@@ -155,6 +157,7 @@ export function learnFromExecution(
         // 重新注册到内存管理器
         registerLearnedPack(pack)
         logger.info(`[SkillPack·学习] 合并技能包: ${existing.id}（第${existing.learnCount}次学习）`)
+        persistExperienceMemory(intent, steps, app, existing.id)
         return { packId: existing.id, isNew: false }
       }
     } catch (e) {
@@ -194,6 +197,7 @@ export function learnFromExecution(
   saveMeta(meta)
   registerLearnedPack(pack)
   logger.info(`[SkillPack·学习] 新建技能包: ${packId}（${app}）`)
+  persistExperienceMemory(intent, steps, app, packId)
   return { packId, isNew: true }
 }
 
@@ -202,6 +206,54 @@ function registerLearnedPack(pack: SkillPack): void {
     skillPackManager.register(pack)
   } catch {
     // 已存在则跳过
+  }
+}
+
+/**
+ * #25 经验分支：学习成功后同步沉淀 experience 记忆
+ * 1) 写 memories.db（type=experience，主记忆库，记忆页可查）
+ * 2) 异步写向量库（type=experience，供 RAG search-memory 检索参与上下文注入）
+ * 走外置记忆，不碰模型权重，零坍缩风险；向量写入失败不影响主记忆落地。
+ */
+export function persistExperienceMemory(
+  intent: string,
+  steps: any[],
+  app: string,
+  packId: string
+): void {
+  if (!intent || !steps || steps.length === 0) return
+  try {
+    const stepSummary = steps
+      .map((s: any) => `${s.action || '操作'}@${s.target || s.window || '当前窗口'}`)
+      .slice(0, 12)
+      .join('；')
+    const content = `在「${app}」中学会了执行「${intent.slice(0, 120)}」：${stepSummary}`
+    const mem = addMemorySync({
+      content,
+      type: 'experience',
+      tags: ['经验学习', app, packId].filter(Boolean),
+    })
+    logger.info(`[SkillPack·学习] 已沉淀经验记忆: ${mem.id} (${app})`)
+    // 向量库异步写入（embedding 较慢，不阻塞学习主流程）
+    void (async () => {
+      try {
+        const { embedding } = await getEmbedding(content)
+        const chunks = splitText(content)
+        for (const chunk of chunks) {
+          vectorStore.add(
+            `experience-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+            chunk,
+            embedding,
+            { type: 'experience', tags: ['经验学习', app, packId], timestamp: Date.now(), memoryId: mem.id }
+          )
+        }
+        logger.info(`[SkillPack·学习] 经验记忆已写入向量库 (${app})`)
+      } catch (e) {
+        logger.warn(`[SkillPack·学习] 经验向量写入失败（不影响主记忆）: ${e}`)
+      }
+    })()
+  } catch (e) {
+    logger.warn(`[SkillPack·学习] 经验记忆沉淀失败: ${e}`)
   }
 }
 

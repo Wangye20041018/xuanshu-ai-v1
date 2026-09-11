@@ -6,6 +6,7 @@
  * 未命中（小众软件/游戏/UWP）由调用方回退视觉识别（接 VL-7B / Qwen2-VL-2B 视觉）。
  */
 
+import { ipcMain } from 'electron'
 import { uiaLocate, UIAControl, UIACriteria } from './locator'
 
 class UIALocator {
@@ -55,15 +56,14 @@ export const uiaLocator = new UIALocator()
  * 注册 UIA IPC 通道（命名空间 uia:*，见架构 §10 对齐点）
  */
 export function setupUIAHandlers(): void {
-  const { ipcMain } = require('electron')
-  ipcMain.handle('uia:locate', async (_e: any, criteria: UIACriteria) => {
+  ipcMain.handle('uia:locate', async (_e, criteria: UIACriteria) => {
     try {
       return await uiaLocator.locate(criteria || {})
     } catch {
       return null
     }
   })
-  ipcMain.handle('uia:find-text', async (_e: any, text: string) => {
+  ipcMain.handle('uia:find-text', async (_e, text: string) => {
     try {
       return await uiaLocator.findControlByText(text || '')
     } catch {

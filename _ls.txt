@@ -1,1 +1,0 @@
-ls: cannot access 'vitest_out.txt': No such file or directory

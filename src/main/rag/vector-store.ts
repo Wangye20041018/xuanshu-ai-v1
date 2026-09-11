@@ -4,7 +4,7 @@ import {existsSync, readFileSync, writeFileSync} from 'fs'
 import { createHash } from 'crypto'
 import { logger } from '../../shared/logger'
 
-type MemoryType = 'conversation' | 'preference' | 'fact'
+type MemoryType = 'conversation' | 'preference' | 'fact' | 'experience'
 
 interface Vector {
   id: string
@@ -15,6 +15,7 @@ interface Vector {
     timestamp?: number
     source?: string
     memoryId?: string
+    namespace?: string
   }
   embedding: number[]
 }
@@ -199,43 +200,50 @@ export class VectorStore {
   }
 
   /** B4.4: 构建缓存 key */
-  private buildCacheKey(embedding: number[], topK: number, type?: string): string {
+  private buildCacheKey(embedding: number[], topK: number, type?: string, namespace?: string): string {
     const hash = createHash('md5')
     // 使用�?32 �?+ topK + type 生成 key
     const sample = embedding.slice(0, VectorStore.COARSE_FILTER_DIMS)
     hash.update(sample.join(','))
     hash.update(`|${topK}`)
     if (type) hash.update(`|${type}`)
+    if (namespace) hash.update(`|ns:${namespace}`)
     return hash.digest('hex')
   }
 
-  search(queryEmbedding: number[], topK: number = 5): SearchResult[] {
-    const cacheKey = this.buildCacheKey(queryEmbedding, topK)
+  search(queryEmbedding: number[], topK: number = 5, namespace?: string): SearchResult[] {
+    const cacheKey = this.buildCacheKey(queryEmbedding, topK, undefined, namespace)
     const cached = this.searchCache.get(cacheKey)
     if (cached) return cached
 
     const startTime = performance.now()
 
-    const vectorArray = Array.from(this.vectors.values())
+    const vectorArray = Array.from(this.vectors.values()).filter(v =>
+      namespace === undefined || namespace === '' ? true : v.metadata.namespace === namespace
+    )
     const results = this.computeSimilarities(queryEmbedding, vectorArray, topK)
 
     const elapsed = performance.now() - startTime
     if (elapsed > VectorStore.PERF_WARN_THRESHOLD_MS) {
-      logger.warn(`[VectorStore] search took ${elapsed.toFixed(1)}ms with ${this.vectors.size} vectors (topK=${topK})`)
+      logger.warn(`[VectorStore] search took ${elapsed.toFixed(1)}ms with ${this.vectors.size} vectors (topK=${topK}${namespace ? `, ns=${namespace}` : ''})`)
     }
 
     this.searchCache.set(cacheKey, results)
     return results
   }
 
-  searchByType(type: MemoryType | 'knowledge', queryEmbedding: number[], topK: number = 5): SearchResult[] {
-    const cacheKey = this.buildCacheKey(queryEmbedding, topK, type)
+  searchByType(type: MemoryType | 'knowledge', queryEmbedding: number[], topK: number = 5, namespace?: string): SearchResult[] {
+    const cacheKey = this.buildCacheKey(queryEmbedding, topK, type, namespace)
     const cached = this.searchCache.get(cacheKey)
     if (cached) return cached
 
     const startTime = performance.now()
 
-    const filtered = Array.from(this.vectors.values()).filter(v => v.metadata.type === type)
+    const filtered = Array.from(this.vectors.values()).filter(v => {
+      if (v.metadata.type !== type) return false
+      if (namespace !== undefined && namespace !== '' && v.metadata.namespace !== namespace) return false
+      return true
+    })
     const results = this.computeSimilarities(queryEmbedding, filtered, topK)
 
     const elapsed = performance.now() - startTime

@@ -5,6 +5,7 @@ import fs from 'fs'
 import { logger } from '../../shared/logger'
 import { encrypt, decrypt, mask } from '../secure/secure-store'
 import { validateSender } from '../utils/ipc-guard'
+import { DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROFILE } from '../../shared/default-persona'
 
 interface AppConfig {
   theme: 'dark' | 'light'
@@ -28,6 +29,7 @@ interface AppConfig {
   defaultModelId: string
   systemPrompt: string
   userProfile: string
+  webSearchEnabled: boolean
   cloudApiKey: string
   cloudApiUrl: string
   cloudModelName: string
@@ -41,12 +43,21 @@ interface AppConfig {
   orbTheme: string
   orbSize: number
   floatingBallEnabled: boolean
+  floatingBallSnapToEdge: boolean
+  floatingBallVoiceId: string
+  floatingBallWakeMode: string
+  floatingBallAutoStart: boolean
   orbEnabled: boolean
   voiceprint?: any
   controlGlowEnabled: boolean
   controlGlowBrightness: number
   controlGlowColor: string
   controlGlowIntensity: number
+  intentEnabled: boolean
+  /** MTP 自动识别开关（默认 true：架构支持 MTP 且型号含 MTP 的模型自动启用 MTP 参数） */
+  mtpAutoEnable?: boolean
+  /** 视觉 2B 纯内存推理兜底开关（默认 true：SGLang 不可用时自动切本地 CPU 后端跑 Qwen2-VL-2B） */
+  visionCpuFallback?: boolean
 }
 
 interface ProviderConfig {
@@ -93,9 +104,14 @@ const ALLOWED_CONFIG_KEYS = new Set([
   'visionProvider',
   'modelConfig',
   'cloudApiModels',
+  'cloudModels',
   'orbTheme',
   'orbSize',
   'floatingBallEnabled',
+  'floatingBallSnapToEdge',
+  'floatingBallVoiceId',
+  'floatingBallWakeMode',
+  'floatingBallAutoStart',
   'orbEnabled',
   'tandemConfig',
   'modelRegistry',
@@ -107,6 +123,11 @@ const ALLOWED_CONFIG_KEYS = new Set([
   'controlGlowBrightness',
   'controlGlowColor',
   'controlGlowIntensity',
+  // ===== 手势意图引擎 =====
+  'intentEnabled',
+  // ===== 推理链路开关（MTP 自动识别 / 视觉 CPU 兜底） =====
+  'mtpAutoEnable',
+  'visionCpuFallback',
   // ===== 预留（规划中）=====
   'wakeWord', 'wakeWordEnabled', 'wakeWordSensitivity',
   'phoneSyncEnabled', 'phoneChannels',
@@ -159,6 +180,7 @@ function initStore(): void {
       wakeWordEnabled: false,
       wakeWordSensitivity: 50,
       phoneSyncEnabled: false,
+      intentEnabled: false,
       phoneChannels: {
         voice: true,
         text: true,
@@ -174,8 +196,9 @@ function initStore(): void {
       sendStats: false,
       autoStart: false,
       defaultModelId: '',
-      systemPrompt: '',
-      userProfile: '',
+      systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      userProfile: DEFAULT_USER_PROFILE,
+      webSearchEnabled: true,
       cloudApiKey: '',
       cloudApiUrl: '',
       cloudModelName: '',
@@ -189,6 +212,10 @@ function initStore(): void {
       orbTheme: 'default',
       orbSize: 220,
       floatingBallEnabled: false,
+      floatingBallSnapToEdge: true,
+      floatingBallVoiceId: 'xuanxu_warm_female',
+      floatingBallWakeMode: 'click',
+      floatingBallAutoStart: false,
       orbEnabled: false,
       // 智能体操作系统 · 发光特效默认开启 + 可调
       controlGlowEnabled: true,

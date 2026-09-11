@@ -1,18 +1,16 @@
 ﻿import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { useChatStore } from '../../store/chatStore'
-import RightPanel from '../../components/RightPanel'
-import TaskProgressOverlay from '../../components/TaskProgressOverlay'
+import { useTaskRunEvents } from '../../hooks/useTaskRunEvents'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { Logger } from '../../../shared/logger'
 import { HEX_COLORS, COLORS } from '../../shared/theme'
-import type { ModelRegistryEntry, TandemConfig, TandemStatusItem } from '../../../shared/ipc-types'
+// #修复1 人设预设打底：system 为空时兜底注入默认身份（贾维斯×星期五×真人级伙伴桌面助手）
+import { buildDefaultSystemContent } from '../../../shared/default-persona'
 
 import HomeHeader from './HomeHeader'
-import QuickActions from './QuickActions'
-import ChatPanel from './ChatPanel'
+import ChatPanel, { type AttachmentItem } from './ChatPanel'
 import StatusBar from './StatusBar'
-import type { TandemMode } from './messageRender'
 import type { TaskCardData } from '../../components/TaskCard'
 
 /* ========== 错误文案友好化（用户体验：避免抛英文/堆栈） ========== */
@@ -50,33 +48,34 @@ export default function Home() {
     ensureSession,
   } = useChatStore()
 
+  // 订阅任务步骤/工具调用过程事件（全局一次），归并进非持久化 taskRunStore 供任务时间线渲染
+  useTaskRunEvents()
+
   /* ------ 状态 ------ */
   const [input, setInput] = useState('')
   const [isStreaming, setStreaming] = useState(false)
   const [isFocused, setIsFocused] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
+  // P4 语音重构：逐条朗读的暂停/继续状态（暂停作用于 audioRef / speechSynthesis）
+  const [speakingPaused, setSpeakingPaused] = useState(false)
+  const speakingPausedRef = useRef(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [panelOpen, setPanelOpen] = useState(false)
   const [editingConvId, setEditingConvId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
-  const [voiceContinuousMode, setVoiceContinuousMode] = useState(true)
-  const [tandemMode, setTandemMode] = useState<TandemMode | null>(null)
-  const [defaultModel, setDefaultModel] = useState<{ id: string; name: string; modelPath: string } | null>(null)
+  // F批：输入区待发送附件（拖拽/粘贴暂存），发送时构造真实内容数组消息
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([])
+  const attachmentsRef = useRef<AttachmentItem[]>([])
+  useEffect(() => { attachmentsRef.current = attachments }, [attachments])
   const [modelHealthy, setModelHealthy] = useState(false) // P0-3: 模型引擎实际健康状态
-  const [modelLoading, setModelLoading] = useState(false) // 体验优化：模型加载中（供「正在加载模型…」提示）
-  const [modelLoadingName, setModelLoadingName] = useState<string | null>(null)
   const [aiSuggestion, setAiSuggestion] = useState<{ reason: string; clients: { name: string; exePath: string; version?: string }[] } | null>(null)
 
+  // 上下文用量面板：只消费主进程 chat:context-stats 推送的真实数据（manager.buildContext 计算后经 chat.ipc.ts 映射推送）。
+  // 未推送时返回空对象，ContextIndicator 显示 0%（无假数值/写死上限），严禁本地估算制造假显示。
   const contextStats = useMemo(() => {
     const conv = conversations.find(c => c.id === currentConversationId)
-    if (conv?.contextStats) return conv.contextStats
-    const msgCount = messages.length
-    const estimatedTokens = msgCount > 0 ? msgCount * 200 + 850 : 0
-    return { totalTokens: 128000, usedTokens: estimatedTokens, compressedRounds: 0, compressionRatio: 0 }
-  }, [conversations, currentConversationId, messages.length])
+    return conv?.contextStats ?? null
+  }, [conversations, currentConversationId])
 
-  const recognitionRef = useRef<any>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const streamCleanupRef = useRef<(() => void) | null>(null)
 
@@ -87,22 +86,9 @@ export default function Home() {
     assistantId: '',
   })
   const streamTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const manualStopRef = useRef(false)
-  const audioStreamRef = useRef<MediaStream | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const voiceprintBufferRef = useRef<Float32Array>(new Float32Array(0))
-  const voiceprintWriteIdxRef = useRef(0)
-  const voiceContinuousModeRef = useRef(true) // P2-6: ref 同步，避免 handleSend 闭包过期
-
-  // P2-6: 同步 voiceContinuousMode 到 ref，避免 handleSend 闭包过期
-  useEffect(() => { voiceContinuousModeRef.current = voiceContinuousMode }, [voiceContinuousMode])
+  const speakMsgRef = useRef<(msgId: string, text: string) => void>(() => {}) // P4: 供 tryFinish 自动朗读引用（handleSpeakMessage 定义在其后）
 
   /* ------ Effects ------ */
-  useEffect(() => {
-    if (window.api) {
-      window.api.invoke('floating-ball:tandem-mode', !!tandemMode).catch((e) => { hlog.asyncError('tandemModeSync', e) })
-    }
-  }, [tandemMode])
 
   // P0-3: 模型引擎健康检查 — 启动时检查 + 周期轮询（5s），追踪实际加载状态
   useEffect(() => {
@@ -114,7 +100,6 @@ export default function Home() {
         .then(h => {
           if (cancelled) return
           setModelHealthy(!!h?.healthy)
-          if (h?.modelName) setDefaultModel(prev => prev ?? { id: '', name: h.modelName!, modelPath: '' })
         })
         .catch(() => { if (!cancelled) setModelHealthy(false) })
     }
@@ -123,39 +108,15 @@ export default function Home() {
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
-  // 体验优化：监听主进程模型加载状态广播（loading/ready/error），用于「正在加载模型…」友好提示
-  useEffect(() => {
-    if (!window.api?.on) return
-    const unsub = window.api.on('model:load-status', (_event: any, data: any) => {
-      if (!data || typeof data.status !== 'string') return
-      if (data.status === 'loading') {
-        setModelLoading(true)
-        setModelLoadingName(data.modelName ?? null)
-      } else {
-        setModelLoading(false)
-        if (data.status === 'ready' && data.modelName) setModelLoadingName(data.modelName ?? null)
-      }
-    })
-    return () => { try { unsub() } catch { /* 非关键操作，失败可安全忽略 */ } }
-  }, [])
-
   // M-19 修复：ensureSession 仅在挂载时执行一次，避免引用变化导致无限循环
   useEffect(() => { ensureSession() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (window.api) {
-      window.api.invoke<boolean>('config:get', 'voiceContinuousMode').then(v => {
-        if (typeof v === 'boolean') setVoiceContinuousMode(v)
-      }).catch((e) => { hlog.asyncError('getVoiceContinuousConfig', e) })
-    }
-  }, [])
 
   useEffect(() => {
     if (!window.api?.on) return
     const unsub = window.api.on('chat:context-stats', (_event: any, stats: any) => {
       if (stats && currentConversationId) {
         updateContextStats(currentConversationId, {
-          totalTokens: stats.totalTokens ?? 128000,
+          totalTokens: stats.totalTokens ?? 0,
           usedTokens: stats.usedTokens ?? 0,
           compressedRounds: stats.compressedRounds ?? 0,
           compressionRatio: stats.compressionRatio ?? 0,
@@ -167,7 +128,6 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      try { recognitionRef.current?.stop() } catch (e) { hlog.asyncError('cleanupRecognition', e) }
       if (streamCleanupRef.current) streamCleanupRef.current()
       if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
     }
@@ -175,34 +135,103 @@ export default function Home() {
 
   /* ------ Handlers ------ */
 
+  // F批：拖拽/粘贴文件 → 转真实绝对路径（复用 A批15 getPathForFile）→ 暂存为附件，同名去重
+  const addAttachments = useCallback((files: File[]) => {
+    const items: AttachmentItem[] = files.map(f => {
+      const path = window.api?.getPathForFile?.(f) || (f as any).path || f.name
+      return {
+        id: crypto.randomUUID(), path,
+        type: (f.type && f.type.startsWith('image/')) ? 'image' : 'file',
+        name: f.name, mime: f.type || undefined,
+      }
+    })
+    setAttachments(prev => {
+      const seen = new Set(prev.map(a => a.path))
+      return [...prev, ...items.filter(a => !seen.has(a.path))]
+    })
+  }, [])
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id))
+  }, [])
+
   const handleSend = useCallback(async (overrideText?: string) => {
-    if (isStreaming && !overrideText) return
     const text = (overrideText ?? input).trim()
-    if (!text) return
+    // F批：附件（拖拽/粘贴的真实文件）与文本均计入发送条件——允许「纯图片/纯文件」消息
+    const pendingFiles = attachmentsRef.current
+    if (!text && pendingFiles.length === 0) return
+
+    // D11: AI 生成/思考中允许「追加指令」——生成中/思考中可直接接着发，追加进会话。
+    // 先终止当前流（已生成内容已随 rAF flush 落盘保留），再以完整会话上下文 + 新指令快速续一轮，
+    // 复用 handleStop 同款清理（内联避免声明顺序依赖），避免双流并发竞态。
+    if (isStreaming && !overrideText) {
+      if (streamCleanupRef.current) { streamCleanupRef.current(); streamCleanupRef.current = null }
+      if (streamTimeoutRef.current) { clearTimeout(streamTimeoutRef.current); streamTimeoutRef.current = null }
+      streamStateRef.current.streamFinished = true
+      streamStateRef.current.invokeFinished = true
+      try { if (window.api) await window.api.invoke('chat:stop', useChatStore.getState().currentConversationId || undefined) } catch (e) { hlog.asyncError('handleSend-stop', e) }
+      return handleSend(text)
+    }
 
     // P0-3: 模型预检 — 引擎未就绪时阻止发送并提示
-    if (!tandemMode && !modelHealthy) {
+    if (!modelHealthy) {
       // M-18 修复：消息 ID 使用 crypto.randomUUID() 避免 Date.now() 碰撞
-      addMessage({ id: crypto.randomUUID(), role: 'user' as const, content: text, timestamp: Date.now() })
+      const warnFiles = pendingFiles.map(f => ({ path: f.path, type: f.mime || f.type, name: f.name }))
+      addMessage({ id: crypto.randomUUID(), role: 'user' as const, content: text, timestamp: Date.now(), files: warnFiles.length ? warnFiles : undefined })
       setInput('')
+      setAttachments([])
       const warnId = crypto.randomUUID()
       addMessage({ id: warnId, role: 'assistant' as const, content: '模型引擎尚未就绪，无法响应。请在模型设置页中导入模型并等待加载完成后再发送消息。', timestamp: Date.now() })
       return
     }
 
     // M-18 修复：消息 ID 使用 crypto.randomUUID() 避免 Date.now() 碰撞
-    const userMessage = { id: crypto.randomUUID(), role: 'user' as const, content: text, timestamp: Date.now() }
+    // F批：真实内容数组附件随用户消息一起入会话（main 侧 extractTextContent 已兼容内容数组）
+    const userFiles = pendingFiles.map(f => ({ path: f.path, type: f.mime || f.type, name: f.name }))
+    const userMessage = {
+      id: crypto.randomUUID(), role: 'user' as const, content: text, timestamp: Date.now(),
+      files: userFiles.length ? userFiles : undefined,
+    }
     addMessage(userMessage)
     setInput('')
+    setAttachments([])
     setStreaming(true)
     const assistantId = crypto.randomUUID()
     const assistantMessage = { id: assistantId, role: 'assistant' as const, content: '', timestamp: Date.now() }
-    addMessage(assistantMessage)
-
-    if (voiceContinuousModeRef.current && recognitionRef.current) {
-      try { recognitionRef.current.stop() } catch { /* 非关键操作，失败可安全忽略 */ }
-    // 非关键操作，失败可安全忽略
+    // A批8：流式输出 rAF 合帧 —— 正文/推理先在闭包内全量累积（覆盖式写入天然防重复），
+    // 每个动画帧最多写一次 store，token 密集也不丢字、不卡 UI；done/stop/超时/异常均强制落盘。
+    // A批7：startAt 记录真实首帧时间，flush 后按真实字符数估算 token（UI 标注「约」）并计算耗时与速度。
+    // 记录发起流的会话 id：流式事件按 sessionId 路由，会话切换后内容仍写回原会话
+    const streamConvId = useChatStore.getState().currentConversationId || undefined
+    const startAt = Date.now()
+    let accContent = ''
+    let accReasoning = ''
+    let accRafId: number | null = null
+    let accRafDirty = false
+    const flushAcc = () => {
+      if (accRafId !== null) { cancelAnimationFrame(accRafId); accRafId = null }
+      accRafDirty = false
+      if (!accContent && !accReasoning) return
+      useChatStore.getState().updateMessage(assistantId, accContent, streamConvId, accReasoning)
     }
+    const scheduleFlush = () => {
+      if (accRafDirty) return
+      accRafDirty = true
+      accRafId = requestAnimationFrame(() => {
+        accRafId = null
+        accRafDirty = false
+        useChatStore.getState().updateMessage(assistantId, accContent, streamConvId, accReasoning)
+      })
+    }
+    // 仅记录「确有内容」的生成统计；token 为基于真实字符数的估算值，UI 会以「约」标注
+    const recordMeta = () => {
+      if (!accContent && !accReasoning) return
+      const charCount = accContent.length
+      const tokenEstimate = Math.max(1, Math.round(charCount * 0.75))
+      const elapsedMs = Date.now() - startAt
+      useChatStore.getState().updateMessageMeta(assistantId, { tokenEstimate, elapsedMs, charCount }, streamConvId)
+    }
+    addMessage(assistantMessage)
 
     if (streamCleanupRef.current) { streamCleanupRef.current(); streamCleanupRef.current = null }
 
@@ -221,55 +250,24 @@ export default function Home() {
       if (streamTimeoutRef.current) { clearTimeout(streamTimeoutRef.current); streamTimeoutRef.current = null }
       if (!ss.streamFinished || !ss.invokeFinished) return
       setStreaming(false)
-      if (voiceContinuousModeRef.current && !manualStopRef.current) {
-        setTimeout(() => {
-          try {
-            const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-            recognitionRef.current = new SR()
-            recognitionRef.current.continuous = true
-            recognitionRef.current.interimResults = true
-            recognitionRef.current.lang = 'zh-CN'
-            recognitionRef.current.onresult = async (e: any) => {
-              const transcript = Array.from(e.results).map((r: any) => r[0].transcript).join('')
-              setInput(transcript)
-              if (speakingId && audioRef.current) { audioRef.current.pause(); audioRef.current = null; setSpeakingId(null) }
-              const latestResult = e.results[e.results.length - 1]
-              const text = latestResult[0]?.transcript?.trim()
-              if (text && window.api) {
-                const ringBuf = voiceprintBufferRef.current
-                if (ringBuf && ringBuf.length > 0) {
-                  const writeIdx = voiceprintWriteIdxRef.current
-                  const ordered = new Float32Array(ringBuf.length)
-                  for (let i = 0; i < ringBuf.length; i++) ordered[i] = ringBuf[(writeIdx + i) % ringBuf.length]
-                  window.api.send('voice:speech-audio', ordered)
-                }
-                window.api.send('wake:recognized-text', text)
-                window.api.send('wake:voice-input')
-                window.api.send('floating-ball:show-subtitle', text)
-                try {
-                  const { parseVoiceCommand, handleVoiceCommand } = await import('../../utils/voice-commands')
-                  const cmd = parseVoiceCommand(text)
-                  if (cmd) { handleVoiceCommand(cmd, speakCommandFeedback); setInput(''); return }
-                } catch { /* 非关键操作，失败可安全忽略 */ }
-              }
+      // P4 语音重构：autoSpeak 开启时，回复完成后自动朗读最终文本
+      if (window.api) {
+        window.api.invoke<{ autoSpeak?: boolean }>('voice:get-settings')
+          .then((gs) => {
+            if (gs && gs.autoSpeak) {
+              const finalText = useChatStore.getState().messages.find(m => m.id === assistantId)?.content
+              if (finalText && finalText.trim()) speakMsgRef.current(assistantId, finalText)
             }
-            recognitionRef.current.onend = () => {
-              if (window.api) window.api.send('floating-ball:hide-subtitle')
-              if (voiceContinuousModeRef.current && !manualStopRef.current) {
-                setTimeout(() => { try { recognitionRef.current?.start() } catch { setIsRecording(false) } }, 500)
-              } else { setIsRecording(false) }
-            }
-            recognitionRef.current.onerror = () => setIsRecording(false)
-            recognitionRef.current.start()
-            setIsRecording(true)
-          } catch { setIsRecording(false) }
-        }, 800)
+          })
+          .catch(() => { /* 非关键操作，失败可安全忽略 */ })
       }
     }
 
     // P0-1: 120 秒超时保护 — 模型引擎卡死时强制结束，防止 UI 永久阻塞
     streamTimeoutRef.current = setTimeout(() => {
       hlog.error(`handleSend timeout — forcing stream finish for assistant:${assistantId}`)
+      flushAcc()
+      recordMeta()
       ss.streamFinished = true
       ss.invokeFinished = true
       if (streamCleanupRef.current) { streamCleanupRef.current(); streamCleanupRef.current = null }
@@ -278,86 +276,7 @@ export default function Home() {
 
     try {
       if (window.api) {
-        if (tandemMode) {
-          let running = false
-          try {
-            const status = await window.api.invoke<any[]>('tandem:status')
-            if (status && status.filter((s: any) => s.status === 'running').length >= 2) running = true
-          } catch { /* 非关键操作，失败可安全忽略 */ }
-
-          if (!running) {
-            // 自动启动：尝试用已注册模型拉起两个联动服务器，避免用户必须手动配置
-            try {
-              let cfg = await window.api.invoke<TandemConfig | null>('tandem:get-config')
-              let modelList: any[] = []
-              if (cfg && Array.isArray(cfg.models) && cfg.models.length >= 2 && (cfg.models as any[]).every(m => m.modelPath)) {
-                modelList = cfg.models as any[]
-              } else {
-                const registryModels = await window.api.invoke<ModelRegistryEntry[]>('model-registry:list')
-                if (registryModels && registryModels.length >= 2) {
-                  const def = (registryModels as any[]).find((m: any) => m.isDefault) || registryModels[0]
-                  const second = registryModels.find(m => m.id !== def.id) || registryModels[1]
-                  modelList = [
-                    {
-                      id: def.id, name: def.name, modelPath: def.modelPath, port: 8080,
-                      gpuLayers: 28, contextSize: 4096, mode: 'gpu', temperature: 0.7, maxTokens: 2048,
-                    },
-                    {
-                      id: second.id, name: second.name, modelPath: second.modelPath, port: 8081,
-                      gpuLayers: 0, contextSize: 2048, mode: 'cpu', temperature: 0.7, maxTokens: 2048,
-                    },
-                  ]
-                  cfg = { models: modelList, hardwareLimit: { maxVRAM_MB: 5600, maxThreads: 8 }, defaultMode: tandemMode as any }
-                  await window.api.invoke('tandem:load-config', cfg)
-                }
-              }
-              // 逐个启动未运行的服务器；GPU 被占用时自动降级 CPU 重试
-              for (const m of modelList.slice(0, 2)) {
-                const cur = await window.api.invoke<any[]>('tandem:status')
-                if (cur && cur.find((s: any) => s.modelId === m.id && s.status === 'running')) continue
-                let res = await window.api.invoke<any>('tandem:start-server', m)
-                if (!res?.success && res?.error && String(res.error).includes('GPU')) {
-                  res = await window.api.invoke<any>('tandem:start-server', { ...m, mode: 'cpu', gpuLayers: 0 })
-                }
-              }
-              const status2 = await window.api.invoke<any[]>('tandem:status')
-              if (status2 && status2.filter((s: any) => s.status === 'running').length >= 2) running = true
-            } catch { /* 自动启动失败走下方提示 */ }
-          }
-
-          if (!running) {
-            updateMessage(assistantId, `[超算模式] 模型服务器未就绪（自动启动失败）。请在模型设置页「联动模式」中手动启动两个模型服务器（6GB 显存建议 1 个 GPU + 1 个 CPU 小模型）。`)
-            ss.invokeFinished = true; tryFinish(); return
-          }
-
-          try {
-            const config = await window.api.invoke<TandemConfig>('tandem:get-config')
-            let modelAId = config?.models?.[0]?.id
-            let modelBId = config?.models?.[1]?.id
-
-            if (!modelAId || !modelBId) {
-              const registryModels = await window.api.invoke<ModelRegistryEntry[]>('model-registry:list')
-              if (registryModels && registryModels.length >= 2) { modelAId = registryModels[0].id; modelBId = registryModels[1].id }
-              else if (registryModels && registryModels.length === 1 && defaultModel) {
-                updateMessage(assistantId, `[超算模式] 仅接入 1 个模型（${registryModels[0].name}），超算联动需要至少 2 个模型。请在模型设置页接入更多模型。`)
-                ss.invokeFinished = true; tryFinish(); return
-              } else {
-                updateMessage(assistantId, `[超算模式] 未接入模型，请在模型设置页导入模型并设为默认。`)
-                ss.invokeFinished = true; tryFinish(); return
-              }
-            }
-
-            const result = await window.api.invoke<TandemStatusItem>('tandem:chat', tandemMode, text, modelAId, modelBId)
-            if (result.error) { updateMessage(assistantId, `[联动错误] ${result.error}`) }
-            else if (result.success) { updateMessage(assistantId, JSON.stringify({ _tandem: true, mode: tandemMode, ...result })) }
-            else { updateMessage(assistantId, `[联动模式] 未知响应`) }
-          } catch (e) { updateMessage(assistantId, `[联动错误] ${(e as Error)?.message || String(e)}`) }
-          ss.invokeFinished = true; tryFinish(); return
-        }
-
         const latestMessages = useChatStore.getState().messages.filter(m => m.id !== assistantId && m.content !== undefined)
-        // 记录发起流的会话 id：流式事件按 sessionId 路由，会话切换后内容仍写回原会话
-        const streamConvId = useChatStore.getState().currentConversationId || undefined
         let systemContent = ''
         try {
           const sysPrompt = await window.api.invoke<string>('config:get', 'systemPrompt')
@@ -366,10 +285,71 @@ export default function Home() {
           if (userProfile) systemContent += `[用户画像]\n${userProfile}`
         } catch { /* 非关键操作，失败可安全忽略 */ }
 
-        const rawMessages = latestMessages.map(m => ({ role: m.role, content: m.content }))
-        let finalMessages = systemContent
-          ? [{ role: 'system' as const, content: systemContent }, ...rawMessages]
-          : rawMessages
+        // #修复1 人设预设打底：config 中无 systemPrompt/userProfile 时兜底注入默认身份，
+        // 保证无论加载/更换任何模型（流水盘 GGUF），请求都带单条 system，模型始终知道自己是谁
+        if (!systemContent.trim()) {
+          systemContent = buildDefaultSystemContent()
+        }
+
+        // F批/B5-2续（方案02 Step1）：识图根因修复 —— 发送链路构造「内容数组」真实图片消息。
+        // 把最新一条含 [图片: path] 占位标记的用户消息解析为 OpenAI 多模态分段
+        // [{type:'text',text}, {type:'image_url',image_url:{url}}]，
+        // 让 main 端 buildRouteSignal.hasImage 识别到真实图片并触发 swapToVision 看图分支；
+        // 历史消息保持 string，避免上下文构建/生成器被无谓数组污染。
+        const parseImageMarkToParts = (content: string): Array<{ type: string; text?: string; image_url?: { url: string } }> => {
+          const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = []
+          let last = 0
+          const re = /\[图片:\s*([^\]]+)\]/g
+          let it: RegExpExecArray | null
+          while ((it = re.exec(content))) {
+            const before = content.slice(last, it.index)
+            if (before.trim()) parts.push({ type: 'text', text: before })
+            const path = it[1].trim()
+            if (path) parts.push({ type: 'image_url', image_url: { url: path } })
+            last = it.index + it[0].length
+          }
+          const tail = content.slice(last)
+          if (tail.trim()) parts.push({ type: 'text', text: tail })
+          return parts
+        }
+        const rawMessages = latestMessages.map((m, idx) => {
+          const c = m.content
+          const isLastUser = idx === latestMessages.length - 1 && m.role === 'user'
+          // F批：附件消息优先 —— 由真实文件数组直接构造 OpenAI multi-part 内容数组，
+          // 图片 → image_url、其余 → text 文件引用；main 端 buildRouteSignal.hasImage 据此切看图分支
+          if (isLastUser && Array.isArray((m as any).files) && (m as any).files.length > 0) {
+            const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = []
+            if (c.trim()) parts.push({ type: 'text', text: c })
+            for (const f of (m as any).files) {
+              const ftype: string = f.type || ''
+              if (ftype.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.path || '')) {
+                parts.push({ type: 'image_url', image_url: { url: f.path } })
+              } else {
+                parts.push({ type: 'text', text: `[文件] ${f.name || f.path}: ${f.path}` })
+              }
+            }
+            return { role: m.role, content: parts }
+          }
+          if (!isLastUser || typeof c !== 'string' || !/\[图片:\s*[^\]]+\]/.test(c)) {
+            return { role: m.role, content: c }
+          }
+          const parts = parseImageMarkToParts(c)
+          return parts.length > 0 ? { role: m.role, content: parts } : { role: m.role, content: c }
+        })
+        let finalMessages = [
+          { role: 'system' as const, content: systemContent },
+          ...rawMessages,
+        ]
+
+        // #修复2 工具能力注入：发送时携带已注册工具名白名单，
+        // 后端 toolRegistry 白名单校验后组装完整 schema 透传 provider，与具体模型无关
+        let toolWhitelist: string[] = []
+        try {
+          const listRes = await window.api.invoke<any>('agent:list-tools')
+          if (listRes && listRes.success && Array.isArray(listRes.data)) {
+            toolWhitelist = listRes.data.map((t: any) => t.name).filter(Boolean)
+          }
+        } catch { /* 工具清单拉取失败时后端默认全量注入 */ }
 
         // 联网搜索开关：开启时自动补充实时搜索结果作为模型参考上下文
         if (text.trim()) {
@@ -400,18 +380,30 @@ export default function Home() {
           if (data.done) {
             // 处理 Hybrid 路径在 done:true 中携带的内容
             if (data.chunk) {
-              const current = (streamConvId ? useChatStore.getState().conversations.find(c => c.id === streamConvId)?.messages : useChatStore.getState().messages)?.find(m => m.id === assistantId)
-              if (current && !current.content) {
-                useChatStore.getState().updateMessage(assistantId, data.chunk, streamConvId)
-              }
+              accContent = accContent ? accContent + data.chunk : data.chunk
             }
+            // 「只有思考没有回答」发布级兜底：流正常结束、正文为空但思考存在时，
+            // 说明思考型模型只输出了 reasoning 未产出 content —— 不把思考串为正文，
+            // 思考仍仅保留在「深度思考」折叠区；正文写入明确提示避免空白/悬浮
+            if (!accContent && accReasoning) {
+              accContent = '**[模型仅返回了思考过程，未生成回答正文。]**\n\n请点击上方「深度思考」查看推理内容；如频繁出现，可在模型设置中关闭「深度思考」开关后重试。'
+            }
+            // 结束：取消未执行的帧，把最终完整内容一次性落 store（不丢字）
+            flushAcc()
+            recordMeta()
             ss.streamFinished = true
             if (streamCleanupRef.current) { streamCleanupRef.current(); streamCleanupRef.current = null }
             tryFinish()
             return
           }
-          useChatStore.getState().updateMessage(assistantId,
-            ((streamConvId ? useChatStore.getState().conversations.find(c => c.id === streamConvId)?.messages : useChatStore.getState().messages)?.find(m => m.id === assistantId)?.content || '') + data.chunk, streamConvId)
+          // M-3 / A批8：推理流与正文流独立累积，rAF 合帧（每帧最多一次写入），覆盖式全量不重复
+          if (data.kind === 'reasoning') {
+            accReasoning += data.chunk || ''
+            scheduleFlush()
+            return
+          }
+          accContent += data.chunk || ''
+          scheduleFlush()
         })
         // v12.2 任务前扫描建议：复杂任务未走云端时，主进程推送本机 AI 客户端建议
         const unsubSuggest = window.api.on('chat:ai-client-suggestion', (_e: any, data: any) => {
@@ -423,7 +415,7 @@ export default function Home() {
         streamCleanupRef.current = () => { unsubStream(); unsubSuggest() }
 
         const result = await window.api.invoke<{ content?: string; error?: string; success?: boolean; stopped?: boolean }>('chat:send', {
-          messages: finalMessages, stream: true, id: streamConvId })
+          messages: finalMessages, stream: true, id: streamConvId, tools: toolWhitelist })
         if (result.error && result.stopped !== true) { updateMessage(assistantId, `错误: ${formatErrorText(result.error)}`) }
         else if (result.content) { const current = useChatStore.getState().messages.find(m => m.id === assistantId); if (current && !current.content) updateMessage(assistantId, result.content) }
       } else {
@@ -434,15 +426,21 @@ export default function Home() {
     } catch (error: any) {
       hlog.asyncError('handleSend', error)
       const errMsg = error?.message || error?.toString?.() || '未知错误'
-      updateMessage(assistantId, `发送失败: ${formatErrorText(errMsg)}`)
+      // 错误提示并入已累积内容（已产出部分回复时不丢），再统一落盘
+      const errText = `发送失败: ${formatErrorText(errMsg)}`
+      accContent = accContent ? `${accContent}\n\n${errText}` : errText
+      flushAcc()
     } finally {
       // P0-1: 保证所有路径（含异常）均标记流完成并清理
+      // A批8：异常/中止路径也把已累积的完整内容落 store，确保不丢字
+      flushAcc()
+      recordMeta()
       ss.invokeFinished = true
       ss.streamFinished = true
       if (streamCleanupRef.current) { streamCleanupRef.current(); streamCleanupRef.current = null }
       tryFinish()
     }
-  }, [input, isStreaming, tandemMode, modelHealthy, addMessage, updateMessage, setStreaming])
+  }, [input, isStreaming, modelHealthy, addMessage, updateMessage, setStreaming])
 
   const handleStop = useCallback(async () => {
     if (!isStreaming) return
@@ -470,7 +468,29 @@ export default function Home() {
   const handleConfirmRename = useCallback((id: string) => { if (editTitle.trim()) renameConversation(id, editTitle.trim()); setEditingConvId(null); setEditTitle('') }, [editTitle, renameConversation])
   const handleCancelRename = useCallback(() => { setEditingConvId(null); setEditTitle('') }, [])
 
+  // P4 语音重构：逐条朗读暂停/继续（作用于 audioRef 与 speechSynthesis）
+  const togglePauseSpeaking = useCallback(() => {
+    const nextPaused = !speakingPausedRef.current
+    speakingPausedRef.current = nextPaused
+    setSpeakingPaused(nextPaused)
+    if (audioRef.current) {
+      try { if (nextPaused) { audioRef.current.pause() } else { void audioRef.current.play() } } catch { /* ignore */ }
+    }
+    try { if (nextPaused) { window.speechSynthesis?.pause() } else { window.speechSynthesis?.resume() } } catch { /* ignore */ }
+  }, [])
+
+  // P4 语音重构：逐条朗读停止
+  const stopSpeaking = useCallback(() => {
+    speakingPausedRef.current = false
+    setSpeakingPaused(false)
+    if (audioRef.current) { try { audioRef.current.pause() } catch { /* ignore */ } audioRef.current = null }
+    try { window.speechSynthesis?.cancel() } catch { /* ignore */ }
+    setSpeakingId(null)
+  }, [setSpeakingId])
+
   const handleSpeakMessage = useCallback(async (msgId: string, text: string) => {
+    speakingPausedRef.current = false
+    setSpeakingPaused(false)
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
     try { speechSynthesis.cancel() } catch (e) { hlog.asyncError('handleSpeak_cancel', e) }
     setSpeakingId(msgId)
@@ -493,86 +513,40 @@ export default function Home() {
     } catch (e) { hlog.asyncError('handleSpeak_tts', e); setSpeakingId(null) }
   }, [setSpeakingId])
 
-  // 语音命令执行失败时的语音反馈（避免静默失败，用户无感知）
-  const speakCommandFeedback = useCallback(async (text: string) => {
-    try {
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
-      try { speechSynthesis.cancel() } catch (e) { hlog.asyncError('speakFeedback_cancel', e) }
-      if (window.api) {
-        const result = await window.api.invoke<{ success?: boolean; audioPath?: string }>('voice:speak', text)
-        if (result && result.success && result.audioPath) {
-          const audio = new Audio(); audioRef.current = audio
-          audio.src = `local-file://${result.audioPath.replace(/\\/g, '/')}`
-          await audio.play()
-          return
-        }
-      }
-      const utterance = new SpeechSynthesisUtterance(text); utterance.lang = 'zh-CN'
-      speechSynthesis.speak(utterance)
-    } catch (e) { hlog.asyncError('speakFeedback', e) }
-  }, [])
+  // P4: 保持 speakMsgRef 指向最新 handleSpeakMessage，供 handleSend.tryFinish 自动朗读调用
+  useEffect(() => { speakMsgRef.current = handleSpeakMessage }, [handleSpeakMessage])
 
-  const startRecording = useCallback(async () => {
-    if (isRecording || recognitionRef.current) return
-    manualStopRef.current = false
-    try {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        audioStreamRef.current = stream
-        try {
-          const audioCtx = new AudioContext({ sampleRate: 16000 }); audioContextRef.current = audioCtx
-          const source = audioCtx.createMediaStreamSource(stream)
-          const bufSize = audioCtx.sampleRate * 2; const ringBuf = new Float32Array(bufSize); let writeIdx = 0
-          const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-          processor.onaudioprocess = (ev: AudioProcessingEvent) => {
-            const input = ev.inputBuffer.getChannelData(0)
-            for (let i = 0; i < input.length; i++) { ringBuf[writeIdx] = input[i]; writeIdx = (writeIdx + 1) % bufSize }
-          }
-          source.connect(processor); processor.connect(audioCtx.destination)
-          voiceprintBufferRef.current = ringBuf; voiceprintWriteIdxRef.current = writeIdx
-        } catch { /* 非关键操作，失败可安全忽略 */ }
-      } catch (e) { hlog.asyncError('micPermission', e) }
-      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-      if (!SR) return
-      recognitionRef.current = new SR()
-      recognitionRef.current.continuous = true; recognitionRef.current.interimResults = true; recognitionRef.current.lang = 'zh-CN'
-      recognitionRef.current.onresult = (e: any) => {
-        const transcript = Array.from(e.results).map((r: any) => r[0].transcript).join('')
-        setInput(transcript)
-        if (speakingId && audioRef.current) { audioRef.current.pause(); audioRef.current = null; setSpeakingId(null) }
-        const latestResult = e.results[e.results.length - 1]; const text = latestResult[0]?.transcript?.trim()
-        if (text && window.api) {
-          const ringBuf = voiceprintBufferRef.current
-          if (ringBuf && ringBuf.length > 0) {
-            const writeIdx = voiceprintWriteIdxRef.current; const ordered = new Float32Array(ringBuf.length)
-            for (let i = 0; i < ringBuf.length; i++) ordered[i] = ringBuf[(writeIdx + i) % ringBuf.length]
-            window.api.send('voice:speech-audio', ordered)
-          }
-          window.api.send('wake:recognized-text', text); window.api.send('wake:voice-input')
-          window.api.send('floating-ball:show-subtitle', text)
-          import('../../utils/voice-commands').then(({ parseVoiceCommand, handleVoiceCommand }) => {
-            const cmd = parseVoiceCommand(text); if (cmd) { handleVoiceCommand(cmd, speakCommandFeedback); setInput('') }
-          }).catch((e) => { hlog.asyncError('voiceCommands', e) })
+  // P4 语音重构：朗读快捷键（Alt+R 朗读选中文本/最后一条AI回复、Alt+P 暂停/继续、Esc 停止朗读）
+  const ttsKeyRef = useRef<{ pause: () => void; stop: () => void }>({ pause: () => {}, stop: () => {} })
+  useEffect(() => { ttsKeyRef.current = { pause: togglePauseSpeaking, stop: stopSpeaking } })
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const isTyping = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      if (e.altKey && e.code === 'KeyR' && !e.ctrlKey && !e.shiftKey) {
+        e.preventDefault()
+        const sel = (window.getSelection()?.toString() || '').trim()
+        if (sel) {
+          speakMsgRef.current('selection', sel)
+        } else {
+          const lastAi = [...messages].reverse().find((m) => m.role === 'assistant' && m.content)
+          if (lastAi) speakMsgRef.current(lastAi.id, lastAi.content)
         }
+        return
       }
-      recognitionRef.current.onend = () => {
-        if (window.api) window.api.send('floating-ball:hide-subtitle')
-        if (voiceContinuousMode && !manualStopRef.current) { setTimeout(() => { try { recognitionRef.current?.start() } catch { setIsRecording(false) } }, 500) }
-        else { setIsRecording(false) }
+      if (e.altKey && e.code === 'KeyP' && !e.ctrlKey && !e.shiftKey) {
+        e.preventDefault()
+        ttsKeyRef.current.pause()
+        return
       }
-      recognitionRef.current.onerror = () => {
-        if (voiceContinuousMode && !manualStopRef.current) { setTimeout(() => { try { recognitionRef.current?.start() } catch { setIsRecording(false) } }, 1000) }
-        else { setIsRecording(false) }
+      if (e.code === 'Escape' && !isTyping) {
+        ttsKeyRef.current.stop()
       }
-      recognitionRef.current.start(); setIsRecording(true)
-    } catch { setIsRecording(false) }
-  }, [isRecording, voiceContinuousMode, speakingId])
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [messages])
 
-  const stopRecording = useCallback(() => {
-    manualStopRef.current = true
-    try { recognitionRef.current?.stop() } catch (e) { hlog.asyncError('stopRecording', e) }
-    finally { setIsRecording(false) }
-  }, [])
 
   const handleSwitchConv = useCallback((id: string) => { switchConversation(id); setHistoryOpen(false) }, [switchConversation])
 
@@ -583,11 +557,7 @@ export default function Home() {
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', background: 'var(--bg-base)' }}>
         <StatusBar
           historyOpen={historyOpen} setHistoryOpen={setHistoryOpen}
-          panelOpen={panelOpen} setPanelOpen={setPanelOpen}
-          modelHealthy={modelHealthy}
-          modelName={defaultModel?.name ?? null}
-          modelLoading={modelLoading}
-          modelLoadingName={modelLoadingName}
+          onNewChat={() => createConversation()}
         />
 
         {/* v12.2 AI 客户端建议条：复杂任务未走云端时展示，可一键打开本机 AI 客户端接管推理 */}
@@ -634,21 +604,22 @@ export default function Home() {
           speakingId={speakingId}
           input={input}
           setInput={setInput}
-          isRecording={isRecording}
           isFocused={isFocused}
           setIsFocused={setIsFocused}
           handleSend={handleSend}
           handleStop={handleStop}
-          startRecording={startRecording}
-          stopRecording={stopRecording}
           handleSpeakMessage={handleSpeakMessage}
-          tandemMode={tandemMode}
-          setTandemMode={setTandemMode}
+          speakingPaused={speakingPaused}
+          togglePauseSpeaking={togglePauseSpeaking}
+          stopSpeaking={stopSpeaking}
           onTaskAppend={handleTaskAppend}
           onTaskEnd={handleTaskEnd}
           contextStats={contextStats}
           historyOpen={historyOpen}
           setHistoryOpen={setHistoryOpen}
+          attachments={attachments}
+          onAddAttachments={addAttachments}
+          onRemoveAttachment={removeAttachment}
           conversations={conversations}
           currentConversationId={currentConversationId}
           createConversation={createConversation}
@@ -669,19 +640,14 @@ export default function Home() {
               pointerEvents: 'none', zIndex: 1,
             }}>
               <div style={{ pointerEvents: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <HomeHeader onPick={(text) => { setInput(text); handleSend(text) }} />
-                <QuickActions setInput={setInput} />
+                <HomeHeader />
               </div>
             </div>
           )}
         </AnimatePresence>
       </div>
 
-      <AnimatePresence>
-        {panelOpen && <RightPanel onClose={() => setPanelOpen(false)} />}
-      </AnimatePresence>
-
-      <TaskProgressOverlay />
+      {/* 工作面板已移除（发布整改第一批）：删除 RightPanel 渲染与入口 */}
     </ErrorBoundary>
   )
 }

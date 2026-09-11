@@ -1,4 +1,4 @@
-import { app, dialog, shell, BrowserWindow, systemPreferences } from 'electron'
+﻿﻿import { app, dialog, shell, BrowserWindow, systemPreferences } from 'electron'
 import { exec, execSync } from 'child_process'
 import { promisify } from 'util'
 import * as fs from 'fs'
@@ -6,6 +6,7 @@ import * as path from 'path'
 
 import { createLogger } from '../utils/logging'
 import { POWERSHELL_EXE, POWERSHELL_CMD } from '../utils/powershell'
+import { createProxyAgent } from '../utils/proxy-resolver'
 const logger = createLogger('Permission')
 
 const execAsync = promisify(exec)
@@ -23,7 +24,9 @@ async function safeExec(cmd: string, timeout = 3000): Promise<string> {
 /** 检查 powershell 是否可用 */
 function isPowerShellAvailable(): boolean {
   try {
-    execSync(`${POWERSHELL_CMD} -NoProfile -Command "Write-Host OK"`, { timeout: 3000, windowsHide: true })
+    // stdio:'ignore'：不建立 stdout 管道，避免管道被关闭时 execSync 写断管抛 EPIPE，
+    // 进而触发 CrashGuard 递归死循环；返回值恒为 null 但退出码仍可反映成败
+    execSync(`${POWERSHELL_CMD} -NoProfile -Command "Write-Host OK"`, { timeout: 3000, windowsHide: true, stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -513,7 +516,6 @@ class PermissionManager {
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 3000)
-      const { createProxyAgent } = await import('../utils/proxy-resolver')
       const proxyAgent = createProxyAgent()
       const headOptions: any = { method: 'HEAD', signal: controller.signal }
       if (proxyAgent) headOptions.dispatcher = proxyAgent
@@ -530,7 +532,6 @@ class PermissionManager {
       try {
         const controller2 = new AbortController()
         const timeoutId2 = setTimeout(() => controller2.abort(), 3000)
-        const { createProxyAgent } = await import('../utils/proxy-resolver')
         const proxyAgent = createProxyAgent()
         const headOptions2: any = { method: 'HEAD', signal: controller2.signal }
         if (proxyAgent) headOptions2.dispatcher = proxyAgent

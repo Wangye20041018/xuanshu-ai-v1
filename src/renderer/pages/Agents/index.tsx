@@ -2,12 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Bot, Plus, Play, Square, Trash2, ShieldAlert, Sparkles, AlertTriangle, X, Loader2,
+  Users, Zap, ChevronRight, CheckCircle2, Circle as CircleIcon, Upload,
 } from 'lucide-react'
 import { COLORS, HEX_COLORS, containerVariants, itemVariants } from '../../shared/theme'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useAgentStore, pushAgentEvent } from '../../store/agentStore'
 import type { AgentDefinition, AgentCreatePreview, AgentRunEvent } from '../../../shared/agent-types'
+import AgentProfileModal from './AgentProfileModal'
 
+/* ============================================================
+ * 创建向导（原有能力，保留）
+ * ============================================================ */
 function CreateWizard({ onClose }: { onClose: () => void }) {
   const creating = useAgentStore((s) => s.creating)
   const preview = useAgentStore((s) => s.preview)
@@ -31,7 +36,6 @@ function CreateWizard({ onClose }: { onClose: () => void }) {
 
   const handleConfirm = async () => {
     if (!draft) return
-    // 回写本地编辑后的 draft 到 store，再走 confirmCreate（内部读取 store.preview 落盘）
     useAgentStore.setState({ preview: { ...draft, confirmed: false } })
     const saved = await useAgentStore.getState().confirmCreate()
     if (saved) onClose()
@@ -184,6 +188,131 @@ const inputStyle: React.CSSProperties = {
   fontFamily: 'inherit', lineHeight: 1.6, resize: 'vertical',
 }
 
+/* ============================================================
+ * 团队模板（第三批：一键成团）
+ * ============================================================ */
+interface TeamTemplateView {
+  id: string
+  name: string
+  icon?: string
+  description: string
+  pipeline: string
+  steps: Array<{ id: string; role: string; dependsOn: string[] }>
+}
+
+function TeamPanel() {
+  const agents = useAgentStore((s) => s.agents)
+  const [templates, setTemplates] = useState<TeamTemplateView[]>([])
+  const [goals, setGoals] = useState<Record<string, string>>({})
+  const [runningTemplate, setRunningTemplate] = useState<string | null>(null)
+  const [events, setEvents] = useState<Array<{ type: string; stepId?: string; agentId?: string; message?: string; output?: string; taskId?: string }>>([])
+
+  useEffect(() => {
+    const win = window as any
+    win.api?.invoke?.('team:list').then((r: { success: boolean; data: TeamTemplateView[] }) => {
+      if (r?.success) setTemplates(r.data || [])
+    }).catch(() => { /* ignore */ })
+  }, [])
+
+  useEffect(() => {
+    const win = window as any
+    if (!win.api?.on) return
+    const unsub = win.api.on('swarm:event', (_e: unknown, payload: { taskId?: string; type: string; stepId?: string; agentId?: string; message?: string; output?: string }) => {
+      if (!payload || typeof payload.type !== 'string') return
+      setEvents((prev) => [...prev.slice(-60), payload])
+    })
+    return () => unsub?.()
+  }, [])
+
+  const handleRunTemplate = async (templateId: string) => {
+    const goal = goals[templateId] || ''
+    if (!goal.trim() || runningTemplate) return
+    setRunningTemplate(templateId)
+    setEvents([])
+    try {
+      const res = await (window as any).api?.invoke?.('team:run-template', { templateId, goal: goal.trim() })
+      if (res && res.success === false) {
+        setEvents((prev) => [...prev, { type: 'error', message: res.error || '运行失败' }])
+      }
+    } catch (e: any) {
+      setEvents((prev) => [...prev, { type: 'error', message: e?.message || '运行异常' }])
+    } finally {
+      setRunningTemplate(null)
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* 模板选择 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
+        {templates.map((t) => (
+          <motion.div key={t.id} variants={itemVariants} whileHover={{ y: -4, borderColor: COLORS.cardBorderHover }}
+            style={{ padding: 20, borderRadius: 'var(--radius-2xl)', background: COLORS.cardBg, border: `1px solid ${COLORS.cardBorder}`, boxShadow: '0 8px 32px rgba(0,0,0,0.3)', transition: 'all 0.3s' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <span style={{ fontSize: 22 }}>{t.icon || '👥'}</span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>{t.name}</span>
+              <span style={{ marginLeft: 'auto', padding: '2px 10px', fontSize: 11, borderRadius: 999, background: HEX_COLORS.accentDim, color: COLORS.accent }}>{t.steps.length} 角色</span>
+            </div>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6, margin: '0 0 10px' }}>{t.description}</p>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, fontSize: 11, color: COLORS.textMuted, marginBottom: 14 }}>
+              {t.steps.map((s, i) => (
+                <span key={s.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ padding: '3px 10px', borderRadius: 999, background: 'rgba(255,255,255,0.04)', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textSecondary }}>{s.role}</span>
+                  {i < t.steps.length - 1 && <ChevronRight size={12} />}
+                </span>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={goals[t.id] ?? ''}
+                onChange={(e) => setGoals((g) => ({ ...g, [t.id]: e.target.value }))}
+                placeholder="输入团队目标，例如：做一个校园二手书小程序"
+                style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-lg)', background: 'rgba(255,255,255,0.03)', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textPrimary, fontSize: 12, outline: 'none', boxSizing: 'border-box' }}
+              />
+              <button onClick={() => handleRunTemplate(t.id)} disabled={!!runningTemplate || !(goals[t.id] || '').trim()}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 'var(--radius-lg)', background: COLORS.accent, border: 'none', color: '#fff', fontSize: 12, fontWeight: 600, cursor: runningTemplate ? 'not-allowed' : 'pointer', opacity: runningTemplate ? 0.6 : 1 }}>
+                {runningTemplate === t.id ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                {runningTemplate === t.id ? '运行中' : '一键成团'}
+              </button>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* 运行视图：实时流水线 */}
+      {events.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+          style={{ padding: 18, borderRadius: 'var(--radius-2xl)', background: COLORS.cardBg, border: `1px solid ${COLORS.cardBorder}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            {runningTemplate && <motion.span animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }} style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS.accent }} />}
+            <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{runningTemplate ? '团队运行中' : '运行记录'}</span>
+            <button onClick={() => setEvents([])} style={{ marginLeft: 'auto', padding: '4px 12px', borderRadius: 'var(--radius-lg)', background: 'transparent', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted, fontSize: 11, cursor: 'pointer' }}>清空</button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflow: 'auto' }}>
+            {events.map((ev, i) => {
+              const color = ev.type === 'step-done' ? COLORS.success : ev.type === 'step-failed' || ev.type === 'step-error' ? COLORS.danger : ev.type === 'step-start' ? COLORS.accent : COLORS.textMuted
+              const icon = ev.type === 'step-done' ? <CheckCircle2 size={12} /> : ev.type === 'step-failed' || ev.type === 'step-error' ? <AlertTriangle size={12} /> : ev.type === 'step-start' ? <Zap size={12} /> : <CircleIcon size={12} />
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 12px', borderRadius: 'var(--radius-lg)', background: 'rgba(255,255,255,0.03)', fontSize: 12, color, lineHeight: 1.5 }}>
+                  {icon}
+                  <span style={{ color: COLORS.textPrimary, fontWeight: 600, whiteSpace: 'nowrap' }}>{ev.agentId || ''}</span>
+                  <span style={{ color, wordBreak: 'break-all' }}>{ev.message || ev.output || ev.type}</span>
+                </div>
+              )
+            })}
+          </div>
+        </motion.div>
+      )}
+
+      {runningTemplate && agents.length < 6 && (
+        <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-lg)', background: `${HEX_COLORS.accent}10`, color: COLORS.textSecondary, fontSize: 12 }}>
+          当前智能体较少，模板角色会回退到可用智能体。建议先通过「新建智能体」补充，或在首次启动时自动补齐预置智能体库（10+ 个）。
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RunMonitor() {
   const { runningAgentId, events, stopAgent, clearEvents } = useAgentStore()
   if (!runningAgentId && events.length === 0) return null
@@ -242,6 +371,8 @@ function EventRow({ ev }: { ev: AgentRunEvent }) {
   return <div style={{ ...style, color: COLORS.textMuted }}>{ev.message}</div>
 }
 
+type TabKey = 'array' | 'team'
+
 function Agents() {
   const agents = useAgentStore((s) => s.agents)
   const loading = useAgentStore((s) => s.loading)
@@ -253,6 +384,8 @@ function Agents() {
   const deleteAgent = useAgentStore((s) => s.deleteAgent)
   const runAgent = useAgentStore((s) => s.runAgent)
   const [showCreate, setShowCreate] = useState(false)
+  const [profileAgent, setProfileAgent] = useState<AgentDefinition | null>(null)
+  const [tab, setTab] = useState<TabKey>('array')
   const promptRef = useRef<Record<string, string>>({})
 
   useEffect(() => {
@@ -289,22 +422,97 @@ function Agents() {
     }
   }, [])
 
+  // #14 外部 Agent 导入：读取 JSON 定义 → 校验 → 落盘
+  const importFileRef = useRef<HTMLInputElement | null>(null)
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const handleImportFile = useCallback(async (file: File) => {
+    setImportMsg(null)
+    try {
+      const text = await file.text()
+      const raw = JSON.parse(text) as unknown
+      const container = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+      const src = container.definition && typeof container.definition === 'object'
+        ? container.definition as Record<string, unknown>
+        : container
+      const def = src as unknown as Partial<AgentDefinition>
+      if (!def || typeof def.name !== 'string' || !def.name.trim()) {
+        setImportMsg({ ok: false, text: '导入失败：文件中未找到有效的智能体名称' })
+        return
+      }
+      if (!def.id) def.id = `agt-import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const clean: AgentDefinition = {
+        id: def.id,
+        name: String(def.name).trim(),
+        description: typeof def.description === 'string' ? def.description : '',
+        icon: typeof def.icon === 'string' ? def.icon : undefined,
+        color: typeof def.color === 'string' ? def.color : undefined,
+        personaId: typeof def.personaId === 'string' && def.personaId ? def.personaId : 'assistant',
+        personaOverride: def.personaOverride,
+        toolIds: Array.isArray(def.toolIds) ? def.toolIds.filter((t): t is string => typeof t === 'string') : [],
+        memoryConfig: def.memoryConfig || { enabled: false, namespace: `agent:${def.id}`, maxRecall: 5 },
+        modelConfig: def.modelConfig || {},
+        tags: Array.isArray(def.tags) ? def.tags.filter((t): t is string => typeof t === 'string').slice(0, 8) : [],
+        createdAt: typeof def.createdAt === 'number' ? def.createdAt : Date.now(),
+        updatedAt: Date.now(),
+        role: typeof def.role === 'string' ? def.role : undefined,
+        skills: Array.isArray(def.skills) ? def.skills.filter((s): s is string => typeof s === 'string').slice(0, 10) : undefined,
+        collaboration: typeof def.collaboration === 'string' ? def.collaboration : undefined,
+        preset: false,
+      }
+      const res = await (window as any).api?.invoke?.('agent:save', clean) as { success?: boolean; error?: string }
+      if (res && res.success === false) {
+        setImportMsg({ ok: false, text: `导入失败：${res.error || '保存出错'}` })
+        return
+      }
+      await loadAgents()
+      setImportMsg({ ok: true, text: `已导入智能体「${clean.name}」` })
+      setTimeout(() => setImportMsg(null), 4000)
+    } catch (e) {
+      setImportMsg({ ok: false, text: `导入失败：${e instanceof Error ? e.message : 'JSON 解析错误'}` })
+    }
+  }, [loadAgents])
+
+  const tabs: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
+    { key: 'array', label: '智能体阵列', icon: <Bot size={13} /> },
+    { key: 'team', label: '团队模板', icon: <Users size={13} /> },
+  ]
+
   return (
     <ErrorBoundary>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, backgroundColor: COLORS.bg, overflow: 'auto' }}>
         <motion.div initial={{ opacity: 0, y: -12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
           style={{ padding: '28px 32px 12px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, background: `${HEX_COLORS.accent}15`, border: `1px solid ${HEX_COLORS.accent}25`, borderRadius: 'var(--radius-2xl)' }}>
                 <Bot size={19} style={{ color: COLORS.accent }} />
               </div>
               <div>
-                <h2 style={{ fontSize: 26, fontWeight: 800, color: COLORS.textPrimary, margin: 0, letterSpacing: '-0.02em' }}>智能体</h2>
-                <p style={{ fontSize: 12, color: COLORS.textMuted, margin: '2px 0 0', opacity: 0.7 }}>智能体操作系统 · 多智能体工作台</p>
+                <h2 style={{ fontSize: 26, fontWeight: 800, color: COLORS.textPrimary, margin: 0, letterSpacing: '-0.02em' }}>智能体阵列</h2>
+                <p style={{ fontSize: 12, color: COLORS.textMuted, margin: '2px 0 0', opacity: 0.7 }}>大量智能体 · 按任务智能组队 · 自动编排为主手动为辅 · 全部本地 9B 驱动</p>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {importMsg && (
+                <span style={{ fontSize: 12, color: importMsg.ok ? COLORS.success : COLORS.danger, maxWidth: 260 }}>
+                  {importMsg.text}
+                </span>
+              )}
+              <input
+                ref={importFileRef}
+                type="file" accept=".json,application/json"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) void handleImportFile(f)
+                  e.target.value = ''
+                }}
+              />
+              <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={() => importFileRef.current?.click()}
+                title="从 JSON 文件导入智能体定义"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 'var(--radius-lg)', background: 'rgba(255,255,255,0.04)', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textPrimary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                <Upload size={15} /> 导入
+              </motion.button>
               <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={handlePanic}
                 title="紧急暂停（Ctrl+Shift+F12）"
                 style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 'var(--radius-lg)', background: HEX_COLORS.dangerDim, border: `1px solid ${HEX_COLORS.danger}40`, color: COLORS.danger, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
@@ -317,6 +525,21 @@ function Agents() {
             </div>
           </div>
 
+          {/* Tab 切换 */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+            {tabs.map((t) => (
+              <button key={t.key} onClick={() => setTab(t.key)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 'var(--radius-lg)',
+                  background: tab === t.key ? `${HEX_COLORS.accent}18` : 'transparent',
+                  border: `1px solid ${tab === t.key ? HEX_COLORS.accent : 'transparent'}`,
+                  color: tab === t.key ? COLORS.accent : COLORS.textMuted, fontSize: 13, fontWeight: tab === t.key ? 600 : 500, cursor: 'pointer',
+                }}>
+                {t.icon} {t.label}
+              </button>
+            ))}
+          </div>
+
           {error && (
             <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-lg)', background: HEX_COLORS.dangerDim, border: `1px solid ${HEX_COLORS.danger}30`, color: COLORS.danger, fontSize: 12, marginBottom: 16 }}>
               {error}
@@ -324,8 +547,10 @@ function Agents() {
           )}
         </motion.div>
 
-        <div style={{ flex: 1, padding: '0 32px 32px' }}>
-          {loading ? (
+        <div style={{ flex: 1, padding: '16px 32px 32px' }}>
+          {tab === 'team' ? (
+            <TeamPanel />
+          ) : loading ? (
             <div style={{ color: COLORS.textMuted, fontSize: 13, padding: '40px 0', textAlign: 'center' }}>加载中…</div>
           ) : agents.length === 0 ? (
             <div style={{ padding: '80px 0', textAlign: 'center', color: COLORS.textMuted }}>
@@ -339,34 +564,60 @@ function Agents() {
               <AnimatePresence>
                 {agents.map((a) => (
                   <motion.div key={a.id} variants={itemVariants} whileHover={{ y: -4, borderColor: COLORS.cardBorderHover }}
-                    style={{ padding: 20, borderRadius: 'var(--radius-2xl)', background: COLORS.cardBg, border: `1px solid ${COLORS.cardBorder}`, boxShadow: '0 8px 32px rgba(0,0,0,0.3)', transition: 'all 0.3s' }}>
+                    drag="y" dragConstraints={{ top: 0, bottom: 0 }} dragElastic={0.16}
+                    whileDrag={{ scale: 1.03, boxShadow: '0 18px 60px rgba(0,0,0,0.55)' }}
+                    onClick={() => setProfileAgent(a)}
+                    title="可上下拖动卡片调整阅读顺序（释放后回弹原位）；单击卡片查看档案"
+                    style={{ padding: 20, borderRadius: 'var(--radius-2xl)', background: COLORS.cardBg, border: `1px solid ${COLORS.cardBorder}`, boxShadow: '0 8px 32px rgba(0,0,0,0.3)', transition: 'all 0.3s', cursor: 'grab' }}>
                     <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>{a.name}</div>
-                        <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 3 }}>{a.personaId}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {a.icon && <span style={{ fontSize: 18 }}>{a.icon}</span>}
+                          <span style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>{a.name}</span>
+                          {a.preset && (
+                            <span style={{ padding: '1px 8px', fontSize: 10, borderRadius: 999, background: HEX_COLORS.accentDim, color: COLORS.accent }}>预置</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 3 }}>{a.role || a.personaId}</div>
                       </div>
-                      <button onClick={() => deleteAgent(a.id)}
+                      <button onClick={(e) => { e.stopPropagation(); deleteAgent(a.id) }}
                         style={{ padding: 6, background: 'transparent', border: 'none', color: COLORS.textMuted, cursor: 'pointer' }}
                         onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger }}
                         onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textMuted }}>
                         <Trash2 size={14} />
                       </button>
                     </div>
-                    <p style={{ fontSize: 13, color: COLORS.textSecondary, lineHeight: 1.6, margin: '0 0 12px', minHeight: 40, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                    <p style={{ fontSize: 13, color: COLORS.textSecondary, lineHeight: 1.6, margin: '0 0 10px', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
                       {a.description || '（无描述）'}
                     </p>
+                    {(a.skills || []).length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                        {(a.skills || []).slice(0, 4).map((s) => (
+                          <span key={s} title={s} style={{ padding: '2px 10px', fontSize: 11, borderRadius: '9999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textSecondary, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s}</span>
+                        ))}
+                      </div>
+                    )}
+                    {a.collaboration && (
+                      <div style={{ fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
+                        <span style={{ color: COLORS.accent }}>协作协议：</span>{a.collaboration}
+                      </div>
+                    )}
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-                      {(a.tags || []).slice(0, 4).map((t) => (
-                        <span key={t} style={{ padding: '2px 10px', fontSize: 11, borderRadius: '9999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted }}>{t}</span>
+                      {(a.tags || []).slice(0, 3).map((t) => (
+                        <span key={t} title={t} style={{ padding: '2px 10px', fontSize: 11, borderRadius: '9999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t}</span>
                       ))}
                       <span style={{ padding: '2px 10px', fontSize: 11, borderRadius: '9999px', background: HEX_COLORS.accentDim, color: COLORS.accent }}>{a.toolIds.length} 工具</span>
                     </div>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div style={{ marginBottom: 6, fontSize: 11, color: COLORS.textMuted }}>
+                      启动指令：在下方输入要交给该智能体的任务或问题，按 回车 或 ▶ 启动（输入为空时无法启动）
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
                       <input
                         value={promptRef.current[a.id] ?? ''}
                         onChange={(e) => { promptRef.current[a.id] = e.target.value }}
                         onKeyDown={(e) => { if (e.key === 'Enter') handleRun(a.id) }}
-                        placeholder="输入指令运行…"
+                        placeholder="例如：分析这份数据并给出结论……"
+                        title="输入该智能体的启动指令（任务/问题），回车或点击 ▶ 启动运行"
                         style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-lg)', background: 'rgba(255,255,255,0.03)', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textPrimary, fontSize: 12, outline: 'none', boxSizing: 'border-box' }}
                       />
                       <button onClick={() => handleRun(a.id)} disabled={runningAgentId === a.id}
@@ -380,11 +631,12 @@ function Agents() {
             </motion.div>
           )}
 
-          <RunMonitor />
+          {tab === 'array' && <RunMonitor />}
         </div>
 
         <AnimatePresence>
           {showCreate && <CreateWizard onClose={() => setShowCreate(false)} />}
+          {profileAgent && <AgentProfileModal agent={profileAgent} onClose={() => setProfileAgent(null)} />}
         </AnimatePresence>
       </div>
     </ErrorBoundary>

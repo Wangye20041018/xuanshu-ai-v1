@@ -5,6 +5,7 @@ import { app } from 'electron'
 import { getStore } from './config.ipc'
 import { logger } from '../../shared/logger'
 import { createProxyAgent } from '../utils/proxy-resolver'
+import { decrypt } from '../secure/secure-store'
 
 /** 视觉 API 请求超时（毫秒） */
 const VISION_TIMEOUT = 60_000
@@ -52,7 +53,7 @@ async function callVisionAPI(
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${provider.apiKey || ''}`
+            'Authorization': `Bearer ${decrypt(provider.apiKey) || ''}`
           },
           body: JSON.stringify({
             model: visionModel,

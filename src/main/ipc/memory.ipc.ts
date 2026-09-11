@@ -11,10 +11,12 @@ import { join } from 'path'
 import Database from 'better-sqlite3'
 import { logger } from '../../shared/logger'
 
+type MemoryType = 'conversation' | 'preference' | 'fact' | 'experience'
+
 interface Memory {
   id: string
   content: string
-  type: 'conversation' | 'preference' | 'fact'
+  type: MemoryType
   timestamp: number
   tags: string[]
 }
@@ -37,14 +39,50 @@ function openDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
       content TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('conversation', 'preference', 'fact')),
+      type TEXT NOT NULL CHECK(type IN ('conversation', 'preference', 'fact', 'experience')),
       timestamp INTEGER NOT NULL,
       tags TEXT NOT NULL DEFAULT '[]'
     )
   `)
+  migrateSchema(db)
   // 迁移 JSON 文件中的旧数据
   migrateFromJson(db)
   return db
+}
+
+/**
+ * 表结构迁移：旧版本 CHECK 约束不含 'experience' 类型，无法插入经验记忆。
+ * 通过 sqlite_master 检查建表 SQL，若为旧约束则重建表（拷贝数据）以放宽 CHECK。
+ */
+function migrateSchema(database: Database.Database): void {
+  try {
+    const row = database.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories'"
+    ).get() as { sql?: string } | undefined
+    const createSql = row?.sql ?? ''
+    if (createSql.includes('experience')) return // 已是最新结构
+    logger.info('[Memory] 检测到旧表结构，迁移 memories 表以支持 experience 类型')
+    database.exec(`
+      BEGIN;
+      ALTER TABLE memories RENAME TO memories_old;
+      CREATE TABLE memories (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('conversation', 'preference', 'fact', 'experience')),
+        timestamp INTEGER NOT NULL,
+        tags TEXT NOT NULL DEFAULT '[]'
+      );
+      INSERT INTO memories (id, content, type, timestamp, tags)
+        SELECT id, content, type, timestamp, tags FROM memories_old;
+      DROP TABLE memories_old;
+      COMMIT;
+    `)
+    logger.info('[Memory] memories 表结构迁移完成')
+  } catch (e) {
+    logger.error('[Memory] 表结构迁移失败:', e)
+    // 迁移失败回滚事务，避免留下半迁移状态
+    try { database.exec('ROLLBACK') } catch { /* ignore */ }
+  }
 }
 
 /**

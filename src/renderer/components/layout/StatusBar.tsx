@@ -91,7 +91,7 @@ function StatusBar() {
     <div className="app-statusbar">
       <Stat icon={<Cpu size={11} />} value={`${cpu}%`} pct={cpu} />
       <Stat icon={<Memory size={11} />} value={`${stats.memory.used?.toFixed(0) ?? '0'}/${stats.memory.total?.toFixed(0) ?? '0'}G`} pct={mem} />
-      <Stat icon={<HardDrive size={11} />} value={`${gpuMem}%`} pct={gpuMem} />
+      <Stat icon={<HardDrive size={11} />} value={stats.gpu.memoryTotal > 0 ? `${gpuMem}%` : '不可用'} pct={gpuMem} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         {isOnline ? <Globe size={11} style={{ color: 'var(--brand)' }} /> : <WifiOff size={11} />}
         <span style={{ color: isOnline ? 'var(--brand)' : 'var(--text-tertiary)' }}>

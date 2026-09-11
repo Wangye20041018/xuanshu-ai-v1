@@ -37,8 +37,12 @@ export interface BrowserSearchOptions {
 /* ---- Playwright 检测 ---- */
 
 let playwrightAvailable: boolean | null = null
+// v2: playwright 包存在但 chromium 浏览器二进制缺失时，launch 必然失败。
+// 失败一次后缓存标记，后续直接走 HTTP 回退，避免每次聚合查询都重复尝试 launch 拖慢主链路。
+let playwrightLaunchBroken = false
 
 async function checkPlaywright(): Promise<boolean> {
+  if (playwrightLaunchBroken) return false
   if (playwrightAvailable !== null) return playwrightAvailable
   try {
     // 检查 playwright 是否已安装
@@ -82,16 +86,29 @@ async function searchWithPlaywright(
   }
   const { chromium } = playwright
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-blink-features=AutomationControlled',
-    ],
-  })
+  // v2: chromium 浏览器二进制缺失时 launch 必然失败。失败一次即缓存标记，
+  // 后续所有引擎直接回退 HTTP，拒绝每次聚合都重复等待 launch 失败耗时长链路。
+  let browser: any
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
+      ],
+    })
+  } catch (launchErr) {
+    playwrightLaunchBroken = true
+    playwrightAvailable = false
+    logger.warn(
+      `[BrowserSearch] chromium.launch 失败（${engine.name}），本次起回退 HTTP 模式:`,
+      (launchErr as Error)?.message,
+    )
+    return []
+  }
 
   const context = await browser.newContext({
     userAgent: getNextUserAgent(),
@@ -287,6 +304,21 @@ async function searchWithHttp(
   }
 }
 
+/** 剥离 HTML 标签，压缩空白 */
+function stripHtmlTags(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;|&#0183;|&ensp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** 通用兜底提取：<a> 链接 + 标题（标题含嵌套标签时跳过，防止脏数据） */
 function extractResultsFromHtml(
   html: string,
   engine: SearchEngine,
@@ -294,8 +326,47 @@ function extractResultsFromHtml(
 ): SearchResult[] {
   const results: SearchResult[] = []
 
-  // 通用正则：提取链接 + 标题 + 摘要
-  // 匹配 <a> 标签中的 href 和文本
+  // 块级解析优先：按 <li class="b_algo"> 提取 Bing 真实结果
+  // Bing 标题常含 <strong> 等嵌套标签，<a> 内层文本正则无法直接取标题，
+  // 需先切块再剥标签（含摘要 b_caption）。
+  const algoBlockRegex = /<li class="b_algo"[^>]*>([\s\S]*?)<\/li>/gi
+  const algoBlocks = [...html.matchAll(algoBlockRegex)]
+
+  if (algoBlocks.length > 0) {
+    for (const blockMatch of algoBlocks) {
+      if (results.length >= maxResults) break
+      const block = blockMatch[1]
+      // 优先取 <h2> 内的结果链接（标题）；无 h2 时退化为块内首个外链
+      const h2Match = /<h2[^>]*>([\s\S]*?)<\/h2>/i.exec(block)
+      const anchorSource = h2Match ? h2Match[1] : block
+      const linkMatch = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/i.exec(anchorSource)
+      if (!linkMatch) continue
+      const url = linkMatch[1]
+      const title = stripHtmlTags(linkMatch[2])
+      // 跳过导航/广告/空标题
+      if (
+        title.length < 3 ||
+        url.includes('google.com/search') ||
+        url.includes('bing.com/ck/') ||
+        url.includes('duckduckgo.com/') ||
+        url.includes('ad.') ||
+        url.includes('/ads/') ||
+        url.includes('bing.com/')
+      ) continue
+      const captionMatch = /class="b_caption"[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/i.exec(block)
+      const snippet = captionMatch ? stripHtmlTags(captionMatch[1]) : ''
+      results.push({
+        title,
+        url,
+        snippet,
+        engine: engine.id,
+        rank: results.length + 1,
+      })
+    }
+    if (results.length > 0) return results
+  }
+
+  // 通用正则兜底：提取链接 + 标题（仅适用于标题为纯文本的情况）
   const linkRegex = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([^<]+)<\/a>/gi
   const matches = html.matchAll(linkRegex)
 

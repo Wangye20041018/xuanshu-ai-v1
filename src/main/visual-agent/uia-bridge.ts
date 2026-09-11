@@ -11,6 +11,7 @@
  */
 
 import { uiaLocator } from '../uia'
+import { POWERSHELL_EXE } from '../utils/powershell'
 import { interactionExecutor } from './interaction-executor'
 import { Element, ElementType } from './element-recognizer'
 
@@ -20,6 +21,48 @@ export interface UIALocateResult {
   x?: number
   y?: number
 }
+
+/**
+ * 扫描控件树脚本（v11 · 大修第一批）
+ * 通过 Windows UI Automation 遍历当前屏幕所有可交互控件，
+ * 输出 JSON 数组（name 非空且属交互控件类型），供「UIA 控件树」第一级使用。
+ */
+const SCAN_PS_SCRIPT = `
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$interactive = @('ControlType.Button','ControlType.Edit','ControlType.ComboBox','ControlType.CheckBox','ControlType.RadioButton','ControlType.Hyperlink','ControlType.ListItem','ControlType.MenuItem','ControlType.TreeItem','ControlType.Slider','ControlType.TabItem','ControlType.Custom','ControlType.DataItem')
+$stack = New-Object System.Collections.Generic.Stack[object]
+$stack.Push($root)
+$count = 0
+$max = 8000
+$outList = New-Object System.Collections.ArrayList
+while ($stack.Count -gt 0 -and $count -lt $max -and $outList.Count -lt 120) {
+  $el = $stack.Pop()
+  $count++
+  $ct = $el.Current.ControlType.ProgrammaticName
+  $name = $el.Current.Name
+  if ($name -and $interactive -contains $ct) {
+    $r = $el.Current.BoundingRectangle
+    if ($r.Width -gt 1 -and $r.Height -gt 1) {
+      $null = $outList.Add([ordered]@{
+        name = $name
+        automationId = $el.Current.AutomationId
+        controlType = $ct
+        x = [int]$r.X; y = [int]$r.Y; width = [int]$r.Width; height = [int]$r.Height
+      })
+    }
+  }
+  $child = $walker.GetFirstChild($el)
+  while ($child -ne $null) {
+    $stack.Push($child)
+    $child = $walker.GetNextSibling($child)
+  }
+}
+Write-Output ($outList | ConvertTo-Json -Compress -Depth 3)
+`
 
 /** 将 UIA 的 controlType ProgrammaticName 映射到 element-recognizer.ElementType */
 function mapControlType(programmaticName: string): ElementType {
@@ -44,6 +87,41 @@ function mapControlType(programmaticName: string): ElementType {
     CUSTOM: ElementType.UNKNOWN,
   }
   return map[t] || ElementType.UNKNOWN
+}
+
+/**
+ * 通过 UIA 扫描整棵控件树，返回可交互控件（第一级：UIA 控件树）
+ * 失败/无命中返回空数组（交由 OCR / 视觉回退）
+ */
+export async function scanViaUIA(): Promise<Element[]> {
+  try {
+    if (process.platform !== 'win32') return []
+    const { execFile } = require('child_process')
+    const out = await new Promise<string>((resolve) => {
+      execFile(
+        POWERSHELL_EXE,
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', SCAN_PS_SCRIPT],
+        { maxBuffer: 8 * 1024 * 1024, timeout: 20000, windowsHide: true },
+        (err: Error | null, stdout: string) => resolve(err ? '' : stdout || ''),
+      )
+    })
+    const line = (out || '').trim().split('\n').filter(l => l.trim().startsWith('[')).pop()
+    if (!line) return []
+    const parsed = JSON.parse(line)
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((c: any) => ({
+      type: mapControlType(c.controlType || ''),
+      label: c.name || '',
+      bbox: { x: c.x || 0, y: c.y || 0, w: c.width || 0, h: c.height || 0 },
+      confidence: 0.92,
+      state: 'normal' as const,
+      textContent: c.name || '',
+      parentId: null,
+      clickable: true,
+    })).filter((el: Element) => el.label.length > 0 && el.bbox.w > 1 && el.bbox.h > 1)
+  } catch {
+    return []
+  }
 }
 
 /**

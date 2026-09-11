@@ -19,6 +19,7 @@ import { ReActAgent } from './react-loop'
 import { agentStore } from './agent-store'
 import { logger } from '../../shared/logger'
 import type { AgentEvent } from './types'
+import { personaLoader } from '../persona-loader'
 
 /** 运行中的 agent 句柄（供 agent:stop 取消） */
 const runningAgents = new Map<string, ReActAgent>()
@@ -57,7 +58,6 @@ async function buildSystemPrompt(def: AgentDefinition): Promise<string> {
   let base = ''
   try {
     // 延迟加载，避免启动期循环依赖
-    const { personaLoader } = await import('../persona-loader')
     const persona = personaLoader.getPersona(def.personaId)
     base = persona?.system_prompt || persona?.description || ''
   } catch (e) {
@@ -141,6 +141,8 @@ export async function runAgent(
     toolIds: def.toolIds,
     maxSteps,
     defaultModelId: def.modelConfig?.modelId ?? 'default',
+    // A-3 记忆真隔离：注入智能体命名空间，检索类工具据此过滤
+    namespace: def.memoryConfig?.enabled ? def.memoryConfig.namespace : undefined,
   })
 
   runningAgents.set(ctx.agentId, agent)

@@ -9,6 +9,7 @@ import { agentStore } from './agent-store'
 import { runAgent, stopAgent } from './agent-runtime'
 import { toolRegistry } from './tool-registry'
 import type { AgentDefinition, AgentRunEvent, AgentRunRequest } from '../../shared/agent-types'
+import { personaLoader } from '../persona-loader'
 
 export { ToolRegistry, toolRegistry } from './tool-registry'
 export { ReActAgent } from './react-loop'
@@ -88,7 +89,6 @@ export function setupAgentHandlers(): void {
 
   ipcMain.handle('agent:list-personas', async () => {
     try {
-      const { personaLoader } = await import('../persona-loader')
       return { success: true, data: personaLoader.listPersonas() }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
@@ -102,6 +102,9 @@ export function setupAgentHandlers(): void {
         description: t.description,
         category: t.category,
         dangerous: !!t.dangerous,
+        // §8 权限分级与副作用（显式缺失时按 dangerous 推断，供豆包权限设置 UI 展示）
+        permissionLevel: t.permissionLevel ?? (t.dangerous ? 'danger' : 'read') as 'read' | 'act' | 'danger',
+        sideEffect: t.sideEffect ?? (t.dangerous ? 'irreversible' : 'none') as 'none' | 'mutate' | 'irreversible',
       }))
       return { success: true, data }
     } catch (e) {
@@ -118,6 +121,91 @@ export function setupAgentHandlers(): void {
   ipcMain.handle('agent:create-confirm', async (_event, preview: import('../../shared/agent-types').AgentCreatePreview) => {
     const { confirmCreateAgent } = await import('./agent-factory')
     return confirmCreateAgent(preview)
+  })
+
+  // ===== 施工蓝本 §5：二十智能体清单（manifest 纯数据，供豆包 UI 消费） =====
+  ipcMain.handle('agent:list-manifests', async () => {
+    try {
+      const { getAgentManifests } = await import('./agent-manifests')
+      return { success: true, data: getAgentManifests() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:get-manifest', async (_event, id: string) => {
+    try {
+      const { getManifestById } = await import('./agent-manifests')
+      const data = getManifestById(String(id || ''))
+      if (!data) return { success: false, error: '清单不存在' }
+      return { success: true, data }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:seed-manifests', async () => {
+    try {
+      const { ensureManifestAgents } = await import('./preset-agents')
+      const count = ensureManifestAgents()
+      return { success: true, data: { seeded: count } }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // ===== §12:AI 总调度（MetaConductor）IPC =====
+  ipcMain.handle('meta:apps-list', async () => {
+    try {
+      const { metaConductor } = await import('./meta-conductor')
+      return { success: true, data: metaConductor.list() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('meta:apps-register', async (_event, input: Record<string, unknown>) => {
+    try {
+      const { metaConductor } = await import('./meta-conductor')
+      const key = String(input?.key || '').trim()
+      const name = String(input?.name || '').trim()
+      if (!key) return { success: false, error: 'key 必填' }
+      const splitList = (v: unknown): string[] =>
+        (typeof v === 'string' ? v : Array.isArray(v) ? v.join(',') : '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      const data = metaConductor.register({
+        key,
+        name: name || key,
+        rootPath: input?.rootPath ? String(input.rootPath) : undefined,
+        strengths: splitList(input?.strengths),
+        ownedDomains: splitList(input?.ownedDomains),
+        briefPath: input?.briefPath ? String(input.briefPath) : undefined,
+        notes: input?.notes ? String(input.notes) : undefined,
+      })
+      return { success: true, data }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('meta:apps-unregister', async (_event, key: string) => {
+    try {
+      const { metaConductor } = await import('./meta-conductor')
+      return { success: metaConductor.unregister(String(key || '')) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('meta:apps-inflight', async () => {
+    try {
+      const { metaConductor } = await import('./meta-conductor')
+      return { success: true, data: metaConductor.inflightInfo() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   // ===== 控制白名单（T03） =====

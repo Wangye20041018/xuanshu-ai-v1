@@ -6,26 +6,22 @@
 
 import { IAgent, AgentInput, AgentEvent, AgentState, AgentConfig, AgentStats, ToolDefinition, ToolResult } from './types'
 import { toolRegistry } from './tool-registry'
+import { modelAdapter } from './model-adapter'
+import type { ModelAdapterMessage } from '../../shared/model-adapter'
+import type { PermissionLevel, SideEffect } from '../../shared/agent-types'
+import { getStore } from '../ipc/config.ipc'
 import { logger } from '../../shared/logger'
 
-// 延迟导入，避免循环依赖
-let modelManager: any = null
-function getModelManager() {
-  if (!modelManager) {
-    try {
-      modelManager = require('../model-manager').modelManager
-    } catch {
-      logger.warn('[Agent] modelManager 未就绪')
-    }
-  }
-  return modelManager
-}
+/** 危险工具一键冻结开关（§14）：写入后 gatePermission 对所有 danger 级工具一律拒绝 */
+const DANGER_FREEZE_KEY = 'dangerToolsFrozen'
 
 export class ReActAgent implements IAgent {
   readonly id: string
   private _state: AgentState = 'idle'
   private _config: AgentConfig
   private abortController: AbortController | null = null
+  /** 会话内已确认的 act 级工具（§14：act 会话确认一次缓存） */
+  private sessionConfirmedTools: Set<string> = new Set()
   private stats: AgentStats = {
     totalRuns: 0,
     totalSteps: 0,
@@ -43,6 +39,7 @@ export class ReActAgent implements IAgent {
       systemPrompt: config.systemPrompt ?? '',
       verbose: config.verbose ?? false,
       toolIds: config.toolIds,
+      namespace: config.namespace,
     }
   }
 
@@ -63,7 +60,7 @@ export class ReActAgent implements IAgent {
     this.stats.totalRuns++
     this.stats.lastRunAt = Date.now()
 
-    // ReAct 循环
+    // ReAct 循环 —— 模型调用统一走 ModelAdapter（三阶降级：原生FC / JSON协议 / ReAct文本）
     for (let step = 0; step < maxSteps; step++) {
       if (this.abortController.signal.aborted) {
         yield { type: 'response', content: '', isFinal: true }
@@ -75,89 +72,80 @@ export class ReActAgent implements IAgent {
       yield { type: 'status', message: `思考中... (步骤 ${step + 1}/${maxSteps})`, progress: step / maxSteps }
 
       try {
-        // ① 调用推理模型
-        const mgr = getModelManager()
-        if (!mgr) {
-          yield { type: 'error', message: '模型管理器未就绪', code: 'MODEL_MANAGER_NOT_READY' }
-          this._state = 'error'
-          return
-        }
+        // ① 模型推理：上下文 → 统一消息 → ModelAdapter 三阶降级
+        const messages: ModelAdapterMessage[] = context.map((m) => ({
+          role: m.role as ModelAdapterMessage['role'],
+          content: m.content,
+          name: m.name,
+        }))
 
-        // 将上下文消息转换为 prompt 字符串
-        const prompt = this.formatContextAsPrompt(context, tools)
+        const completion = await modelAdapter.complete(messages, { tools })
 
-        const response = await mgr.generateResponse(prompt, {
-          temperature: 0.7,
-          maxTokens: 2048,
-        })
+        yield { type: 'thinking', content: completion.content || '准备调用工具', step: step + 1 }
 
-        const thought = typeof response === 'string' ? response : response.content || response.text || JSON.stringify(response)
-
-        yield { type: 'thinking', content: thought, step: step + 1 }
-
-        // ② 解析工具调用
-        const toolCall = this.parseToolCall(thought)
-
-        if (!toolCall) {
-          // 没有工具调用，直接返回
+        // ② 无工具调用 → 直接返回最终回复
+        if (completion.toolCalls.length === 0) {
           this._state = 'responding'
-          yield { type: 'response', content: thought, isFinal: true }
+          yield { type: 'response', content: completion.content, isFinal: true }
           this._state = 'done'
           this.updateStats(startTime, step)
           return
         }
 
-        // ③ 执行工具
-        this._state = 'acting'
-        yield { type: 'tool_call', tool: toolCall.name, params: toolCall.params, step: step + 1 }
-        this.stats.totalToolCalls++
+        // ③ 执行工具（云端可并行多个，逐个触发真实动作闭环）
+        for (const tc of completion.toolCalls) {
+          this._state = 'acting'
+          yield { type: 'tool_call', tool: tc.toolName, params: tc.args, step: step + 1 }
+          this.stats.totalToolCalls++
 
-        // 工具子集闸：per-agent 未授权工具直接拒绝（纵深防御，模型本不该看到）
-        if (!this.isToolAllowed(toolCall.name)) {
-          yield {
-            type: 'tool_result',
-            tool: toolCall.name,
-            result: { success: false, error: `工具 ${toolCall.name} 未授权给该智能体` },
-            step: step + 1,
+          // 工具子集闸：per-agent 未授权工具直接拒绝（纵深防御，模型本不该看到）
+          if (!this.isToolAllowed(tc.toolName)) {
+            const denied: ToolResult = { success: false, error: `工具 ${tc.toolName} 未授权给该智能体` }
+            yield { type: 'tool_result', tool: tc.toolName, result: denied, step: step + 1 }
+            context.push({
+              role: 'tool',
+              content: JSON.stringify(denied),
+              name: tc.toolName,
+            })
+            continue
           }
+
+          const tool = toolRegistry.get(tc.toolName)
+          // A-3 记忆真隔离：知识类工具透传当前智能体 namespace，检索限定在各自命名空间
+          const namespace = this._config.namespace || input.namespace
+          const toolParams: Record<string, unknown> = { ...tc.args }
+          if (namespace && tool?.category === 'knowledge') {
+            toolParams.namespace = namespace
+          }
+          // 权限闸门（§14）：read 自动 / act 会话确认 / danger 每次强制确认 + 一键冻结
+          // 拒绝则产出失败结果并继续循环，不抛未捕获异常
+          let result: ToolResult
+          if (!tool) {
+            result = { success: false, error: `工具 ${tc.toolName} 不存在` }
+          } else if (!(await this.gatePermission(tool, toolParams))) {
+            result = { success: false, error: '用户已拒绝执行该操作' }
+          } else {
+            result = await toolRegistry.execute(tc.toolName, toolParams)
+          }
+
+          // ④ 观察结果
+          this._state = 'observing'
+          yield { type: 'tool_result', tool: tc.toolName, result, step: step + 1 }
+
+          // 将结果追加到上下文
           context.push({
             role: 'tool',
-            content: JSON.stringify({ success: false, error: `工具 ${toolCall.name} 未授权给该智能体` }),
-            name: toolCall.name,
+            content: JSON.stringify(result),
+            name: tc.toolName,
           })
-          continue
+
+          if (!result.success) {
+            context.push({
+              role: 'system',
+              content: `工具 ${tc.toolName} 执行失败: ${result.error}。请尝试其他方法或告知用户问题。`,
+            })
+          }
         }
-
-        // 危险工具人工确认门：拒绝则产出失败结果并继续循环，不抛未捕获异常
-        const tool = toolRegistry.get(toolCall.name)
-        let result: ToolResult
-        if (tool?.dangerous) {
-          const confirmed = await this.confirmIfDangerous(tool, toolCall.params)
-          result = confirmed
-            ? await toolRegistry.execute(toolCall.name, toolCall.params)
-            : { success: false, error: '用户已拒绝' }
-        } else {
-          result = await toolRegistry.execute(toolCall.name, toolCall.params)
-        }
-
-        // ④ 观察结果
-        this._state = 'observing'
-        yield { type: 'tool_result', tool: toolCall.name, result, step: step + 1 }
-
-        // 将结果追加到上下文
-        context.push({
-          role: 'tool',
-          content: JSON.stringify(result),
-          name: toolCall.name,
-        })
-
-        if (!result.success) {
-          context.push({
-            role: 'system',
-            content: `工具 ${toolCall.name} 执行失败: ${result.error}。请尝试其他方法或告知用户问题。`,
-          })
-        }
-
       } catch (err) {
         logger.error(`[Agent] ReAct 循环 step ${step} 错误:`, err)
         yield { type: 'error', message: String(err), code: 'REACT_LOOP_ERROR' }
@@ -170,19 +158,19 @@ export class ReActAgent implements IAgent {
     this._state = 'responding'
     yield { type: 'status', message: '达到最大步数限制，正在生成最终回复...' }
 
-    // 最终回复
+    // 最终回复（也走 ModelAdapter，纯文本、无工具）
     try {
-      const mgr = getModelManager()
-      if (mgr) {
-        context.push({
-          role: 'system',
-          content: '已达到最大步骤限制，请基于已获取的信息生成最终回复。',
-        })
-        const finalPrompt = this.formatContextAsPrompt(context, null)
-        const finalResponse = await mgr.generateResponse(finalPrompt, { temperature: 0.7, maxTokens: 2048 })
-        const content = typeof finalResponse === 'string' ? finalResponse : finalResponse.content || ''
-        yield { type: 'response', content, isFinal: true }
-      }
+      context.push({
+        role: 'system',
+        content: '已达到最大步骤限制，请基于已获取的信息生成最终回复。',
+      })
+      const finalMessages: ModelAdapterMessage[] = context.map((m) => ({
+        role: m.role as ModelAdapterMessage['role'],
+        content: m.content,
+        name: m.name,
+      }))
+      const finalCompletion = await modelAdapter.complete(finalMessages)
+      yield { type: 'response', content: finalCompletion.content, isFinal: true }
     } catch {
       yield { type: 'response', content: '抱歉，任务执行超时。请尝试简化需求或增加步骤限制。', isFinal: true }
     }
@@ -221,61 +209,67 @@ export class ReActAgent implements IAgent {
     return context
   }
 
-  private formatContextAsPrompt(
-    context: Array<{ role: string; content: string; name?: string }>,
-    tools: ReturnType<typeof toolRegistry.getFunctionCallingTools> | null,
-  ): string {
-    const parts: string[] = []
-
-    // 工具定义
-    if (tools && tools.length > 0) {
-      parts.push('## 可用工具')
-      for (const t of tools) {
-        parts.push(`- **${t.function.name}**: ${t.function.description}`)
-        parts.push(`  参数: ${JSON.stringify(t.function.parameters)}`)
-      }
-      parts.push('')
-    }
-
-    // 对话历史
-    for (const msg of context) {
-      const roleLabel = msg.role === 'system' ? '系统' : msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role === 'tool' ? `工具(${msg.name || 'unknown'})` : msg.role
-      parts.push(`[${roleLabel}]: ${msg.content}`)
-    }
-
-    return parts.join('\n')
-  }
-
   private getDefaultSystemPrompt(): string {
-    const toolList = toolRegistry.getEnabled(this._config.toolIds)
-      .map(t => `- **${t.name}**: ${t.description}`)
-      .join('\n')
-
-    return `你是一个智能桌面助手，可以通过调用工具来完成用户的请求。
-
-## 可用工具
-${toolList}
-
-## 工作方式
-1. 分析用户意图，确定是否需要调用工具
-2. 如需调用工具，使用以下格式：
-\`\`\`tool
-{"name": "工具名", "params": {"参数": "值"}}
-\`\`\`
-3. 观察工具返回结果，决定下一步操作
-4. 完成任务后，直接回复用户，不要包含工具调用代码
-
-## 规则
-- 每次只调用一个工具
-- 工具调用失败时，尝试其他方法
-- 不要透露内部工作细节给用户`
+    return `你是一个智能桌面助手，通过调用工具完成用户请求。工具清单与调用格式由运行时（模型适配层）自动注入，请严格遵循运行时给出的工具调用格式。完成任务后直接回复用户，不要透露内部工作细节。`
   }
 
-  /** 危险工具确认门：有独立 confirm 回调则调用；无则返回 true（依赖工具内部确认，如 visualAgent.confirmExecute） */
-  private async confirmIfDangerous(tool: ToolDefinition, params: Record<string, unknown>): Promise<boolean> {
+  /** 解析工具有效权限分级（§8）：显式 permissionLevel 优先；缺省按 dangerous 推断 */
+  private resolvePermissionLevel(tool: ToolDefinition): PermissionLevel {
+    if (tool.permissionLevel) return tool.permissionLevel
+    return tool.dangerous ? 'danger' : 'read'
+  }
+
+  /** 解析工具副作用（§8）：显式 sideEffect 优先；缺省按权限分级推断 */
+  private resolveSideEffect(tool: ToolDefinition, level: PermissionLevel): SideEffect {
+    if (tool.sideEffect) return tool.sideEffect
+    if (level === 'danger') return 'irreversible'
+    if (level === 'act') return 'mutate'
+    return 'none'
+  }
+
+  /**
+   * 权限闸门（§14）：
+   *  - read：自动放行（无副作用只读）
+   *  - act：会话内确认一次（缓存到 sessionConfirmedTools）
+   *  - danger：每次强制确认；且受「一键冻结危险工具」开关全局拦截
+   */
+  private async gatePermission(tool: ToolDefinition, params: Record<string, unknown>): Promise<boolean> {
+    const level = this.resolvePermissionLevel(tool)
+    const sideEffect = this.resolveSideEffect(tool, level)
+    // 不可逆副作用一律升级为 danger（每次强制确认），防止 act 分级被绕过
+    const effectiveLevel: PermissionLevel = sideEffect === 'irreversible' ? 'danger' : level
+
+    // 一键冻结：danger 级全局拒绝（§14 安全横切）
+    if (effectiveLevel === 'danger' && this.isDangerFrozen()) {
+      logger.warn(`[Agent] 危险工具已全局冻结，拒绝执行: ${tool.name}`)
+      return false
+    }
+
+    if (effectiveLevel === 'read') return true
+    if (effectiveLevel === 'act') {
+      if (this.sessionConfirmedTools.has(tool.name)) return true
+      const ok = await this.confirmTool(tool, params)
+      if (ok) this.sessionConfirmedTools.add(tool.name)
+      return ok
+    }
+    // danger：每次强制确认
+    return this.confirmTool(tool, params)
+  }
+
+  /** 确认门：有独立 confirm 回调则调用；无则返回 true（依赖工具内部确认，如 visualAgent.confirmExecute） */
+  private async confirmTool(tool: ToolDefinition, params: Record<string, unknown>): Promise<boolean> {
     if (!tool.confirm) return true
     try {
       return await tool.confirm(params)
+    } catch {
+      return false
+    }
+  }
+
+  /** 读取「一键冻结危险工具」开关（§14），读取失败默认不冻结（不阻断正常功能） */
+  private isDangerFrozen(): boolean {
+    try {
+      return getStore().get(DANGER_FREEZE_KEY) === true
     } catch {
       return false
     }
@@ -286,32 +280,6 @@ ${toolList}
     const toolIds = this._config.toolIds
     if (!toolIds || toolIds.length === 0) return true
     return toolIds.includes(name)
-  }
-
-  private parseToolCall(text: string): { name: string; params: Record<string, unknown> } | null {
-    // 尝试匹配 ```tool ... ``` 格式
-    const toolMatch = text.match(/```tool\s*\n\s*(\{[\s\S]*?\})\s*\n\s*```/)
-    if (toolMatch) {
-      try {
-        const parsed = JSON.parse(toolMatch[1])
-        if (parsed.name && parsed.params) {
-          return { name: parsed.name, params: parsed.params }
-        }
-      } catch { /* 忽略解析错误 */ }
-    }
-
-    // 尝试匹配 JSON 格式的工具调用
-    const jsonMatch = text.match(/\{[\s\S]*?"name"\s*:\s*"([^"]+)"[\s\S]*?"params"[\s\S]*?\}/)
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0])
-        if (parsed.name && parsed.params) {
-          return { name: parsed.name, params: parsed.params }
-        }
-      } catch { /* 忽略 */ }
-    }
-
-    return null
   }
 
   private updateStats(startTime: number, steps: number): void {

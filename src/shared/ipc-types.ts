@@ -24,6 +24,10 @@ export interface ConfigData {
   orbTheme: string
   orbSize: number
   floatingBallEnabled: boolean
+  floatingBallSnapToEdge: boolean
+  floatingBallVoiceId: string
+  floatingBallWakeMode: string
+  floatingBallAutoStart: boolean
   orbEnabled: boolean
   webSearchEnabled: boolean
   voiceprintId?: string

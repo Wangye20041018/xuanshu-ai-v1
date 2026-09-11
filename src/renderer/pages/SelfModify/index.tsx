@@ -22,6 +22,7 @@ import { ErrorDisplay } from '../../components/ErrorDisplay'
 import { showToast } from '../../components/Toast'
 import { logger } from '../../../shared/logger'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import AppearanceCenter from '../../components/AppearanceCenter'
 import type { ChangeSet } from '../../../shared/self-modify-types'
 
 export default function SelfModify() {
@@ -187,6 +188,11 @@ export default function SelfModify() {
               </span>
             </motion.div>
           )}
+
+          {/* 界面改造配置中心（主题重组 + UI 重组，实时预览 / 一键应用持久化） */}
+          <motion.div variants={itemVariants}>
+            <AppearanceCenter />
+          </motion.div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
             {/* 左：文件浏览 + 编辑 */}

@@ -35,16 +35,12 @@ win:
       arch:
         - x64
   icon: resources/icons/icon.ico
-  requestedExecutionLevel: requireAdministrator
-  # 代码签名：使用自签名证书签名，避免 SmartScreen 拦截
-  # 首次使用前请运行: powershell -ExecutionPolicy Bypass -File scripts/generate-cert.ps1
-  # 用户端安装证书: scripts/install-cert.bat（需管理员权限）
-  certificateFile: resources/cert/xuanshu-root.pfx
-  certificatePassword: ${env.CERT_PASSWORD}
-  # 注意：llama-server.exe / ffmpeg.exe 不是签名工具，不可配置在 sign 字段。
-  # 如需对附加 exe 签名，请在 afterPack 钩子中调用 signtool 处理。
-  signAndEditExecutable: true
-  publisherName: "玄枢AI"
+  requestedExecutionLevel: asInvoker
+  # 个人自用：不签名，不要求管理员权限
+  # 如需签名，设置环境变量 CERT_PASSWORD 并取消下面两行注释
+  # certificateFile: resources/cert/xuanshu-root.pfx
+  # certificatePassword: ${env.CERT_PASSWORD}
+  signAndEditExecutable: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -53,9 +49,9 @@ nsis:
 portable:
   artifactName: XuanShuAI_${version}_Portable.${ext}
 publish:
-  # 需要替换为实际更新服务器URL
+  # 个人自用，不使用自动更新
   provider: generic
-  url: https://updates.xuanshu.ai
+  url: ""
 extraMetadata:
   main: out/main/index.js
 extraResources:
